@@ -1,0 +1,13 @@
+httpx
+websockets
+python-dotenv
+uvicorn
+fastapi
+jinja2
+alembic
+sqlalchemy
+aiosqlite
+cryptography
+obs-ws-client
+buttplug-py
+python-osc
