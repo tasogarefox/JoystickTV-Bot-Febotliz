@@ -20,7 +20,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         dashboard: resolve(__dirname, "index.html"),
-        overlay_points: resolve(__dirname, "overlay/vibegraph/index.html"),
+        overlay_vibegraph: resolve(__dirname, "overlay/vibegraph/index.html"),
+        config_vibegraph: resolve(__dirname, "overlay/vibegraph/config/index.html"),
       },
     },
   },

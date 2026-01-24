@@ -44,5 +44,5 @@ class Bot(ConnectorManager):
 if __name__ == "__main__":
     try:
         asyncio.run(Bot().run())
-    except asyncio.exceptions.CancelledError:
+    except asyncio.CancelledError:
         pass

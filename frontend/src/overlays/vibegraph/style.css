@@ -5,8 +5,9 @@
 
 :root {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  /* line-height: 1.25; */
-  font-weight: 400;
+  font-size: 1.1rem;
+  line-height: 1.2;
+  font-weight: 600;
 
   color-scheme: dark;
   color: rgba(255, 255, 255, 0.87);
@@ -47,85 +48,11 @@ body {
   align-items: center;
 }
 
-.spacer {
-    flex-grow: 1;  /* expand to take all available space in a flex container */
-}
-
 .center {
   justify-content: center;
   align-items: center;
 }
 
-#title {
-  margin-top: 0.6rem;
-}
-
-#title-prefix {
-  color: #999;
-  font-size: 0.9rem;
-}
-
-#title-username {
-  font-size: 1.5rem;
-  font-weight: bold;
-}
-
-#graph {
-  width: 100vw;
-  height: 150px;
-
-  margin: 0.5rem 0;
-}
-
-#controls {
-  margin: 0 0.6rem;
-
-  align-items: normal;
-}
-
-#devices {
-  align-items: start;
-}
-
-.device {
-  margin-right: 0.5rem;
-
-  --icon-color: rgba(242, 12, 127, 1.0);
-}
-
-.device-name {
-  width: 4.2rem;
-
-  font-size: 1rem;
-  color: #999;
-
-  word-wrap: break-word;
-}
-
-.device-icon {
-  padding: 0.1rem;
-
-  background-color: rgba(255, 255, 255, 0.3);
-
-  border-radius: 1000rem;
-  border: 0.15rem solid var(--icon-color);
-
-  transition: border-color 0.2s ease;
-}
-
-.device-icon-mask {
-  width: 2rem;
-  height: 2rem;
-
-  background-color: var(--icon-color);
-
-  transition: background-color 0.2s ease;
-
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
+.spacer {
+  flex-grow: 1;  /* expand to take all available space in a flex container */
 }

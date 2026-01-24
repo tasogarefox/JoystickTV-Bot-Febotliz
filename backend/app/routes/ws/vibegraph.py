@@ -1,15 +1,25 @@
 from typing import Any, Callable, Coroutine, Iterable
 import asyncio
 
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.utils.asyncio import async_select
 from app.connectors.buttplug import VibeGroup, VibeFrame, VibeTarget
+
+# NOTE: Frontend expects all times to be in milliseconds
 
 router = APIRouter(prefix="/vibegraph", tags=["vibegraph"])
 
 clients: set[WebSocket] = set()
 
-DEVICE_NAMES = {
+PING_INTERVAL = 60
+
+RANDOM_DEVICE_COUNT = 2
+RANDOM_MAX_DURATION = 2.0
+RANDOM_START_VALUE = 0.5
+RANDOM_MAX_VALUE_DELTA = 0.4
+RANDOM_DEVICE_NAMES = {
     "default",
     "lovense ambi",
     "lovense calor",
@@ -43,7 +53,21 @@ DEVICE_NAMES = {
     "lovense vulse",
 }
 
-# WARNING: Frontend expects all times to be in milliseconds
+
+# ==============================================================================
+# Schemas
+
+class VibeConfig(BaseModel):
+    hidden: bool = False
+    paused: bool = False
+    strength: int = Field(default=100, ge=0, le=100)
+
+
+# ==============================================================================
+# Config
+
+config = VibeConfig()
+clear_queue = False
 
 
 # ==============================================================================
@@ -80,6 +104,15 @@ async def ping(ws: WebSocket) -> None:
     await ws.send_json({
         "type": "ping",
     })
+
+async def update_config(ws: WebSocket) -> None:
+    await ws.send_json({
+        "type": "update-config",
+        "config": config.model_dump(),
+    })
+
+async def bcast_update_config() -> None:
+    await broadcast(update_config)
 
 async def update_devices(ws: WebSocket, devices: Iterable[str]) -> None:
     await ws.send_json({
@@ -139,35 +172,41 @@ async def bcast_advance(amount: float) -> None:
 async def ws_vibegraph(ws: WebSocket) -> None:
     await ws.accept()
 
+    handle_close = True
+
     clients.add(ws)
     try:
         while True:
-            await asyncio.sleep(60)
+            tsleep = asyncio.create_task(asyncio.sleep(PING_INTERVAL))
+            treceive = asyncio.create_task(ws.receive())
+
+            done = await async_select(tsleep, treceive)
+            if treceive in done:
+                handle_close = False
+                break
+
             await ping(ws)
 
+    except asyncio.CancelledError:
+        raise
+
     except WebSocketDisconnect:
-        pass
+        handle_close = False
 
     finally:
         clients.discard(ws)
-        try:
-            await ws.close()
-        except RuntimeError:
-            pass
+        if handle_close:
+            asyncio.create_task(ws.close())
 
 # @router.websocket("/")
 async def ws_vibegraph_test_groups(ws: WebSocket) -> None:
     import random
 
-    DEVICE_COUNT = 2
-    MAX_DURATION = 2.0
-    MAX_DELTA = 0.5
-
     await ws.accept()
 
     # clients.add(ws)
     try:
-        devices = random.sample(tuple(DEVICE_NAMES), DEVICE_COUNT)
+        devices = random.sample(tuple(RANDOM_DEVICE_NAMES), RANDOM_DEVICE_COUNT)
         await update_devices(ws, devices)
 
         # while True:
@@ -186,19 +225,19 @@ async def ws_vibegraph_test_groups(ws: WebSocket) -> None:
                 for _ in range(random.randint(1, 10)):
                     overrides = []
 
-                    for j in range(DEVICE_COUNT):
+                    for j in range(RANDOM_DEVICE_COUNT):
                         # smooth random walk
                         try:
                             value = frames[-1].targets[j + 1].value
                         except IndexError:
-                            value = 0
-                        value += random.uniform(-MAX_DELTA, MAX_DELTA)
+                            value = RANDOM_START_VALUE
+                        value += random.uniform(-RANDOM_MAX_VALUE_DELTA, RANDOM_MAX_VALUE_DELTA)
                         value = max(0, min(1, value))  # clamp 0–1
 
                         overrides.append(VibeTarget(devices[j], value))
 
                     frames.append(VibeFrame.new_exclusive(
-                        random.uniform(0, MAX_DURATION),
+                        random.uniform(0, RANDOM_MAX_DURATION),
                         overrides,
                     ))
 
@@ -223,15 +262,11 @@ async def ws_vibegraph_test_groups(ws: WebSocket) -> None:
 async def ws_vibegraph_test_frames(ws: WebSocket) -> None:
     import random
 
-    DEVICE_COUNT = 2
-    MAX_DURATION = 2.0
-    MAX_DELTA = 0.5
-
     await ws.accept()
 
     # clients.add(ws)
     try:
-        devices = random.sample(tuple(DEVICE_NAMES), DEVICE_COUNT)
+        devices = random.sample(tuple(RANDOM_DEVICE_NAMES), RANDOM_DEVICE_COUNT)
         await update_devices(ws, devices)
 
         group = VibeGroup(tuple(), username="test-frames")
@@ -245,19 +280,19 @@ async def ws_vibegraph_test_frames(ws: WebSocket) -> None:
             for _ in range(1):
                 overrides = []
 
-                for j in range(DEVICE_COUNT):
+                for j in range(RANDOM_DEVICE_COUNT):
                     # smooth random walk
                     try:
                         value = frames[-1].targets[j + 1].value
                     except IndexError:
-                        value = 0
-                    value += random.uniform(-MAX_DELTA, MAX_DELTA)
+                        value = RANDOM_START_VALUE
+                    value += random.uniform(-RANDOM_MAX_VALUE_DELTA, RANDOM_MAX_VALUE_DELTA)
                     value = max(0, min(1, value))  # clamp 0–1
 
                     overrides.append(VibeTarget(devices[j], value))
 
                 frames.append(VibeFrame.new_exclusive(
-                    random.uniform(0, MAX_DURATION),
+                    random.uniform(0, RANDOM_MAX_DURATION),
                     overrides,
                 ))
 
@@ -272,3 +307,21 @@ async def ws_vibegraph_test_frames(ws: WebSocket) -> None:
 
     except WebSocketDisconnect:
         pass
+
+@router.get("/config", response_model=VibeConfig)
+def get_config():
+    return config
+
+@router.post("/config")
+async def save_config(payload: VibeConfig):
+    global config
+    config = payload
+    await bcast_update_config()
+    return {"status": "ok"}
+
+
+@router.post("/clear")
+async def save_clear_queue():
+    global clear_queue
+    clear_queue = True
+    return {"status": "ok"}

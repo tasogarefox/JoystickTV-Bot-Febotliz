@@ -116,14 +116,14 @@ class ConnectorManager:
                     try:
                         # self.logger.debug(f"Delivering connector message: %r, data: %s", msg, msg.data)
                         await conn.talk_receive(msg)
-                    except asyncio.exceptions.CancelledError:
+                    except asyncio.CancelledError:
                         raise
                     except Exception as e:
                         self.logger.exception("Exception processing connector message: %r, data: %s", msg, msg.data)
 
                 self._msg_queue.task_done()
 
-            except asyncio.exceptions.CancelledError:
+            except asyncio.CancelledError:
                 self.logger.info("Received CancelledError, shutting down connector manager...")
                 self._shutdown.set()
                 raise
@@ -191,7 +191,7 @@ class BaseConnector(abc.ABC):
                     await self.on_connected()
                     await self.main_loop()
 
-            except asyncio.exceptions.CancelledError:
+            except asyncio.CancelledError:
                 self.logger.info("Received CancelledError, shutting down connector...")
                 self._shutdown.set()
                 raise
@@ -280,7 +280,7 @@ class WebSocketConnector(BaseConnector):
 
             try:
                 await self.on_message(data)
-            except asyncio.exceptions.CancelledError:
+            except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.logger.exception("Exception processing WebSocket message")

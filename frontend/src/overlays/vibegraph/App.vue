@@ -1,16 +1,19 @@
 <template>
   <div>
-    <div v-if="tTotal && username" id="title">
-        <p id="title-prefix">Responding to</p>
-        <p id="title-username">{{ username }}</p>
+    <h2 v-if="!connected">Connecting...</h2>
+  </div>
+  <div v-show="connected && !config.hidden">
+    <div v-if="tTotal && username" class="title">
+        <p class="title-prefix">Responding to</p>
+        <p class="title-username">{{ username }}</p>
     </div>
-    <canvas ref="canvas" v-show="tTotal" height="100" id="graph"></canvas>
-    <div id="controls" class="row">
-      <div id="devices" class="row">
+    <canvas ref="canvas" v-show="tTotal" height="80" class="graph"></canvas>
+    <div class="controls row">
+      <div class="devices row">
         <div
           v-for="(device, i) in devices"
           :key="device.name"
-          class="device column"
+          :class="{ 'device': true, 'column': devices.length > 1, 'row': devices.length <= 1 }"
           :style="{ '--icon-color': toCssRgba(getLineColor(i)) }"
         >
           <div class="device-icon">
@@ -28,8 +31,8 @@
         </div>
       </div>
       <div v-if="tTotal" class="spacer"></div>
-      <p v-if="tTotal" id="time">
-        <span id="time-remaining">{{ formatTime(tTotal-tNow) }}</span>
+      <p v-if="tTotal" class="time">
+        <span class="time-remaining">{{ formatTime(tTotal-tNow) }}</span>
       </p>
     </div>
   </div>
@@ -60,11 +63,23 @@ const LINE_COLORS: RGB[] = [
   {r: 242, g: 242, b: 242},  // white
   {r: 242, g: 242, b: 127},  // yellow
   {r: 12, g: 242, b: 12},  // green
+  // {r: 242, g: 127, b: 12},  // orange
+  // {r: 242, g: 127, b: 242},  // purple
+  // {r: 127, g: 127, b: 242},  // light blue
+  // {r: 127, g: 242, b: 127},  // light green
+  // {r: 127, g: 127, b: 127},  // gray
+  // {r: 12, g: 12, b: 12},  // black
 ]
 
 
 // ==========================================================================
 // TYPES
+
+type VibeConfig = {
+  hidden: boolean
+  paused: boolean
+  strength: number
+}
 
 type RGB = {
   r: number
@@ -102,7 +117,15 @@ type VibeDevice = {
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 let chart: Chart | null = null
+
+const connected = ref<boolean>(false)
 let ws: WebSocket | null = null
+
+const config = ref<VibeConfig>({
+  hidden: false,
+  paused: false,
+  strength: 100,
+})
 
 const devices = ref<VibeDevice[]>([])
 
@@ -278,10 +301,12 @@ function wsConnect(): void {
   ws = new WebSocket(`${ws_url}/vibegraph/`)
 
   ws.onopen = () => {
+    connected.value = true
     console.info("Connected to WebSocket")
   }
 
   ws.onclose = () => {
+    connected.value = false
     console.info("Disconnected from WebSocket")
     setTimeout(wsConnect, 1000)
   }
@@ -293,6 +318,10 @@ function wsConnect(): void {
     let doUpdate = false
     switch (msg.type) {
       case "ping":
+        break
+
+      case "update-config":
+        config.value = msg.config
         break
 
       case "update-devices":
@@ -566,7 +595,96 @@ function formatTime(ms: number): string {
 </script>
 
 <style scoped>
-canvas {
-  image-rendering: pixelated /* optional for crisp neon lines */
+.title {
+  margin-top: 0.6rem;
+}
+
+.title-prefix {
+  color: #999;
+  font-size: 1.0rem;
+}
+
+.title-username {
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+
+.graph {
+  width: 100vw;
+
+  margin: 0.5rem 0;
+
+  image-rendering: pixelated;
+}
+
+.controls {
+  margin: 0 0.6rem;
+
+  align-items: normal;
+}
+
+.devices {
+  flex-wrap: wrap;
+  justify-content: start;
+  align-items: start;
+}
+
+.device {
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+
+  --icon-color: rgba(242, 12, 127, 1.0);
+}
+
+.device.row {
+  align-items: normal;
+  text-align: left;
+}
+
+.device-icon {
+  width: 2rem;
+  height: 2rem;
+
+  margin-right: 0.3rem;
+  margin-bottom: 0.3rem;
+  padding: 0.1rem;
+
+  background-color: rgba(255, 255, 255, 0.3);
+
+  border-radius: 1000rem;
+  border: 0.15rem solid var(--icon-color);
+
+  transition: border-color 0.2s ease;
+}
+
+.device-icon-mask {
+  width: 100%;
+  height: 100%;
+
+  background-color: var(--icon-color);
+
+  transition: background-color 0.2s ease;
+
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.device-name {
+  width: 4.2rem;
+
+  font-size: 1rem;
+  color: #999;
+
+  word-wrap: break-word;
+}
+
+.time {
+  font-size: 1.5rem;
+  font-weight: bold;
 }
 </style>

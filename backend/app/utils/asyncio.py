@@ -16,11 +16,11 @@ async def async_select(*tasks: asyncio.Task[Any]) -> set[asyncio.Task[Any]]:
     for task in pending:
         task.cancel()
 
-    # for task in pending:
-    #     try:
-    #         await task
-    #     except asyncio.CancelledError:
-    #         pass
+    for task in pending:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
-    # assert done, "Expected at least one task to complete"
+    assert done, "Expected at least one task to complete"
     return done

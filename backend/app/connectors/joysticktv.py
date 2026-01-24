@@ -15,7 +15,7 @@ from app.settings import getenv_list
 from app.utils.datetime import utcmin, utcnow
 from app.connector import ConnectorMessage, ConnectorManager, WebSocketConnector
 from app.connectors.warudo import QUIRKY_ANIMALS_MAP
-from app.connectors.buttplug import VibeGroup, VibeFrame, VibeTarget
+from app.connectors.buttplug import VibeGroup, VibeFrame, parse_vibes
 
 from app.db.database import get_async_db
 from app.db.models import Channel, Viewer
@@ -119,18 +119,24 @@ class JoystickTVConnector(WebSocketConnector):
         super().__init__(manager, name or NAME, url or URL)
         self.live_channels = {}
 
-    async def __call_with_json_dict(self, _callback: Callable[[dict[Any, Any]], Awaitable], _json_data: str, *args, **kwargs) -> bool:
+    async def __call_with_message_metadata(
+        self,
+        _callback: Callable[[dict[Any, Any], dict[Any, Any]], Awaitable],
+        _message: dict[Any, Any],
+    ) -> bool:
+        metadata_str = _message.get("metadata") or ""
+
         try:
-            data = json.loads(_json_data)
+            metadata = json.loads(metadata_str)
         except json.JSONDecodeError:
-            self.logger.error("Invalid JSON: %s", _json_data)
+            self.logger.error("Invalid JSON: %s", metadata_str)
             return False
 
-        if not isinstance(data, dict):
-            self.logger.error("JSON not a dict: %s", _json_data)
+        if not isinstance(metadata, dict):
+            self.logger.error("JSON not a dict: %s", metadata_str)
             return False
 
-        await _callback(data, *args, **kwargs)
+        await _callback(_message, metadata)
         return True
 
     def _create_connection(self) -> websockets.connect:
@@ -348,32 +354,32 @@ class JoystickTVConnector(WebSocketConnector):
                 await self.on_leave_stream(message)
 
             elif message["type"] == "Followed":
-                await self.__call_with_json_dict(
-                    self.on_followed, message.get("metadata") or "")
+                await self.__call_with_message_metadata(
+                    self.on_followed, message)
 
             elif message["type"] == "Subscribed":
-                await self.__call_with_json_dict(
-                    self.on_subscribed, message.get("metadata") or "")
+                await self.__call_with_message_metadata(
+                    self.on_subscribed, message)
 
             elif message["type"] == "Tipped":
-                await self.__call_with_json_dict(
-                    self.on_tipped, message.get("metadata") or "")
+                await self.__call_with_message_metadata(
+                    self.on_tipped, message)
 
             elif message["type"] == "TipGoalIncreased":
-                await self.__call_with_json_dict(
-                    self.on_tip_goal_increased, message.get("metadata") or "")
+                await self.__call_with_message_metadata(
+                    self.on_tip_goal_increased, message)
 
             elif message["type"] == "MilestoneCompleted":
-                await self.__call_with_json_dict(
-                    self.on_milestone_completed, message.get("metadata") or "")
+                await self.__call_with_message_metadata(
+                    self.on_milestone_completed, message)
 
             elif message["type"] == "TipGoalMet":
-                await self.__call_with_json_dict(
-                    self.on_tip_goal_met, message.get("metadata") or "")
+                await self.__call_with_message_metadata(
+                    self.on_tip_goal_met, message)
 
             elif message["type"] == "StreamDroppedIn":
-                await self.__call_with_json_dict(
-                    self.on_stream_dropped_in, message.get("metadata") or "")
+                await self.__call_with_message_metadata(
+                    self.on_stream_dropped_in, message)
 
     async def on_stream_started(self, message: dict[Any, Any]):
         """
@@ -497,6 +503,37 @@ class JoystickTVConnector(WebSocketConnector):
             if bot_command_lower in ["points", "p"]:
                 await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
                 await self.send_chat_reply(message, f"has {int(viewer.points)} points", at=True)
+
+            elif bot_command_lower == "test_tip":
+                slug = message["author"]["slug"]
+                if slug != message["streamer"]["slug"]:
+                    await self.send_chat_reply(
+                        message,
+                        f"You do not have the necessary permissions to use the {bot_command_lower} command",
+                        at=True,
+                    )
+                    return
+
+                amount = 0
+
+                arg = message.get("botCommandArg")
+                if arg is not None:
+                    try:
+                        amount = int(arg)
+                    except ValueError:
+                        pass
+
+                metadata = {
+                    "who": "TEST",
+                    "what": "Tipped",
+                    "how_much": amount,
+                    "tip_menu_item": None,
+                }
+
+                await asyncio.gather(
+                    self.send_chat_reply(message, f"Sending test tip of {amount} tokens"),
+                    self.on_tipped(message, metadata),
+                )
 
             elif any(x == bot_command_lower for x in ["pet", "pets", "pat", "pats"]) or any(x in text_lower for x in [":felizpet:"]):
                 await asyncio.gather(
@@ -676,181 +713,12 @@ class JoystickTVConnector(WebSocketConnector):
                 #     )
                 #     return
 
-                sections: list[tuple[VibeFrame, ...]] = []
-                cur_section: list[VibeFrame] = []
-
-                # Default/starting values (uses class defaults if not specified)
-                prev_action = VibeFrame.new_override()
-
-                # Values for current action
-                cur_start_value: float | None = None
-                cur_stop_value: float | None = None  # NOTE: Defaults to cur_start_amount
-                cur_time: float | None = None
-                cur_devices: list[str] | None = None
-
-                def flush_cur_action() -> bool:
-                    """Flush the current action into the list."""
-                    nonlocal prev_action, cur_start_value, cur_stop_value, cur_time, cur_devices
-
-                    # If the current action is empty, do nothing
-                    if cur_start_value is None and cur_time is None:
-                        return False
-
-                    # Merge the current action values with the previous
-                    cur_start_value = abs(cur_start_value) if cur_start_value is not None else prev_action.value
-                    cur_stop_value = abs(cur_stop_value) if cur_stop_value is not None else cur_start_value
-                    cur_time = abs(cur_time) if cur_time is not None else prev_action.duration
-                    cur_devices = cur_devices if cur_devices is not None else list(prev_action.get_devices())
-
-                    # Determine the number of actions to add
-                    count = max(1, int(min(
-                        abs(cur_stop_value - cur_start_value) / 0.05 + 1,
-                        cur_time / 0.2,
-                    )))
-                    step_value = (cur_stop_value - cur_start_value) / (count - 1) if count > 1 else 0
-                    step_time = cur_time / count
-
-                    # If the step value is 0, use the average of the start and stop value
-                    if step_value == 0:
-                        cur_start_value = (cur_start_value + cur_stop_value) / 2
-
-                    # Add actions
-                    for i in range(count):
-                        value = cur_start_value + step_value * i
-                        if not cur_devices:
-                            prev_action = VibeFrame.new_override(
-                                step_time,
-                                value,
-                            )
-                        else:
-                            prev_action = VibeFrame.new_exclusive(
-                                step_time,
-                                (VibeTarget(d, value) for d in cur_devices),
-                            )
-                        cur_section.append(prev_action)
-
-                    # Reset the current action
-                    cur_start_value = None
-                    cur_stop_value = None
-                    cur_time = None
-                    cur_devices = None
-
-                    return True
-
-                def flush_cur_section() -> bool:
-                    """Flush the current section into the list."""
-                    nonlocal sections, cur_section
-
-                    # Flush the current action
-                    flush_cur_action()
-
-                    # If the current section is empty, do nothing
-                    if not cur_section:
-                        return False
-
-                    # Add the current section
-                    sections.append(tuple(cur_section))
-
-                    # Reset the current section
-                    cur_section.clear()
-
-                    return True
-
-                # Parse the arguments
-                # NOTE: Raise ValueError if the arguments are invalid
+                vibestr = message.get("botCommandArg") or ""
                 try:
-                    for arg in (message.get("botCommandArg") or "").split(" "):
-                        arg = arg.strip()
-                        if not arg:
-                            continue
-
-                        if not arg[0].isdigit():  # This is a device name
-                            # DISABLED: The following line disables the use of device names.
-                            raise ValueError(f"Invalid argument: {arg}")
-
-                            arg_lower = arg.lower()
-                            # NOTE: Devices never flush, instead they are grouped together.
-                            #       They can however be reset.
-                            if arg_lower in ["clear", "none", "all"]:
-                                # NOTE: An empty list will be treated as "all" devices.
-                                cur_devices = []
-                                continue
-
-                            if cur_devices is None:
-                                cur_devices = []
-
-                            cur_devices.append(arg)
-                            continue
-
-                        elif arg.endswith("%"):  # This is an amount in percent
-                            if cur_start_value is not None:
-                                flush_cur_action()
-
-                            try:
-                                cur_start_value = int(arg[:-1]) / 100
-                                continue
-                            except ValueError:
-                                pass
-
-                            m = re.fullmatch(r'(\d+)%?-(\d+)%', arg)
-                            if m:
-                                low = int(m.group(1)) / 100
-                                high = int(m.group(2) or low) / 100
-                                cur_start_value = random.uniform(low, high)
-                                continue
-
-                            m = re.fullmatch(r'(\d+)%?\.\.+(\d+)%', arg)
-                            if m:
-                                cur_start_value = int(m.group(1)) / 100
-                                cur_stop_value = int(m.group(2) or cur_start_value) / 100
-                                continue
-
-                            raise ValueError(f"Invalid percent format: {arg}")
-
-                        elif arg.endswith("s"):  # This is a time
-                            if cur_time is not None:
-                                flush_cur_action()
-
-                            try:
-                                cur_time = float(arg[:-1])
-                                continue
-                            except ValueError:
-                                pass
-
-                            m = re.fullmatch(r'((?:\d+?\.)?\d+)s?-((?:\d+?\.)?\d+)s', arg)
-                            if m:
-                                low = float(m.group(1))
-                                high = float(m.group(2) or low)
-                                cur_time = random.uniform(low, high)
-                                continue
-
-                            raise ValueError(f"Invalid time format: {arg}")
-
-                        elif arg.endswith("r"):  # Repeat the last section
-                            # Note: If current section is empty, the previous section will be used instead
-                            flush_cur_section()
-                            if not sections:
-                                continue
-
-                            repeat = 1
-                            if len(arg) > 1:
-                                try:
-                                    repeat = int(arg[:-1])
-                                except ValueError:
-                                    raise ValueError(f"Invalid repeat format: {arg}")
-
-                            for _ in range(min(100, repeat)):
-                                sections.append(sections[-1])
-
-                        else:  # Invalid argument
-                            raise ValueError(f"Invalid argument: {arg}")
-
-                    else:
-                        # Flush the last action and section, if any
-                        flush_cur_section()
-
-                    if not sections:
+                    if not vibestr:
                         raise ValueError
+
+                    vibes = parse_vibes(vibestr)
 
                 except ValueError as e:
                     # Show the usage
@@ -863,19 +731,13 @@ class JoystickTVConnector(WebSocketConnector):
                         # f"; !{bot_command_lower} deviceA 5s 50%"
                         # f\n"Tokens may appear in any order. Percent and seconds pair automatically. Devices are optional."
                     ).strip(), at=True)
-                    return
 
-                # If there are no sections, there is nothing to do
-                if not sections:
-                    return
-
-                # Create and send the group of vibes
-                flat_sections = tuple(v for s in sections for v in s)
-                await self.talkto("Buttplug", "vibe", VibeGroup(
-                    frames=flat_sections,
-                    channel_id=channel_id,
-                    username=username,
-                ))
+                else:
+                    await self.talkto("Buttplug", "vibe", VibeGroup(
+                        frames=vibes,
+                        channel_id=channel_id,
+                        username=username,
+                    ))
 
                 return
 
@@ -955,19 +817,63 @@ class JoystickTVConnector(WebSocketConnector):
 
             await db.commit()  # NOTE: must commit after any usage of db
 
-    async def on_followed(self, metadata: dict[Any, Any]):
+    async def on_followed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         await self.send_warudo("OnFollowed", metadata.get("number_of_followers") or 0)
 
         # TODO: reward points
 
-    async def on_subscribed(self, metadata: dict[Any, Any]):
+    async def on_subscribed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         await self.send_warudo("OnSubscribed", str(metadata.get("who")))
 
-    async def on_tipped(self, metadata: dict[Any, Any]):
-        tasks = [
-            self.send_warudo("OnTipped", metadata.get("how_much") or 0),
-            self.talkto("Buttplug", "disable", 180),
-        ]
+    async def on_tipped(self, message: dict[Any, Any], metadata: dict[Any, Any]):
+        OVERRIDE_VIBES = True
+
+        channel_id = message.get("channelId") or ""
+        username = metadata.get("who") or ""
+        amount = metadata.get("how_much") or 0
+        tasks = []
+
+        if not OVERRIDE_VIBES:
+            tasks.append(self.talkto("Buttplug", "disable", 180))
+
+        else:
+            vibes: tuple[VibeFrame, ...] | None = None
+
+            # Basic Levels
+            if 1 <= amount <= 3:
+                vibes = (VibeFrame.new_override(amount + 30, 0.25),)
+            elif 4 <= amount <= 10:
+                vibes = (VibeFrame.new_override(amount * 10, 0.25),)
+            elif amount == 13:
+                vibes = (VibeFrame.new_override(10, 1.0),)
+            elif 14 <= amount <= 35:
+                vibes = (VibeFrame.new_override(amount * 3, 0.5),)
+            elif 40 <= amount <= 199:
+                vibes = (VibeFrame.new_override(amount * 2, 0.75),)
+            elif amount >= 200:
+                vibes = (VibeFrame.new_override(amount / 2, 1.0),)
+
+            # Special Commands
+            # elif amount == ...:
+            #     vibes = ...  # Random Level
+            elif amount == 11:
+                vibes = parse_vibes("50% 30-90s")  # Random Time
+            elif amount == 12:
+                vibes = parse_vibes("12s 0%")  # Pause the Queue
+            elif amount == 36:
+                vibes = parse_vibes("1s 0% 20% 40% 60% 80% 100% 72t")  # Earthquake Pattern
+            elif amount == 37:
+                vibes = parse_vibes("1s 0% 10% 20% 30% 40% 50% 60% 70% 100% 74t")  # Fireworks Pattern
+            elif amount == 38:
+                vibes = parse_vibes("1.5s 1..100% 1.5s 100..1% 76t")  # Wave Pattern
+            elif amount == 39:
+                vibes = parse_vibes("1s 0% 100% 78t")  # Pulse Pattern
+
+            if vibes:
+                vibe_group = VibeGroup(vibes, channel_id=channel_id, username=username)
+                tasks.append(self.talkto("Buttplug", "vibe", vibe_group))
+
+        tasks.append(self.send_warudo("OnTipped", amount))
 
         tip_menu_item = str(metadata.get("tip_menu_item") or "")
         if tip_menu_item:
@@ -977,7 +883,7 @@ class JoystickTVConnector(WebSocketConnector):
 
         # TODO: reward points
 
-    async def on_tip_goal_increased(self, metadata: dict[Any, Any]):
+    async def on_tip_goal_increased(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         step = 100
         current = metadata.get("current") or 0
         previous = metadata.get("previous") or 0
@@ -992,13 +898,13 @@ class JoystickTVConnector(WebSocketConnector):
 
         await asyncio.gather(*tasks)
 
-    async def on_milestone_completed(self, metadata: dict[Any, Any]):
+    async def on_milestone_completed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         await self.send_warudo("OnMilestoneCompleted", metadata.get("amount") or 0)
 
-    async def on_tip_goal_met(self, metadata: dict[Any, Any]):
+    async def on_tip_goal_met(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         await self.send_warudo("OnTipGoalMet", metadata.get("amount") or 0)
 
-    async def on_stream_dropped_in(self, metadata: dict[Any, Any]):
+    async def on_stream_dropped_in(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         await self.send_warudo("OnStreamDroppedIn", metadata.get("number_of_viewers") or 0)
 
         # TODO: reward points?
