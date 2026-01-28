@@ -20,9 +20,9 @@ from app.connectors.buttplug import VibeGroup, VibeFrame, parse_vibes
 from app.db.database import get_async_db
 from app.db.models import Channel, Viewer
 
-from app.joysticktv import jstv_db, jstv_web, jstv_auth
-from app.joysticktv.jstv_web import WS_HOST, ACCESS_TOKEN
-from app.joysticktv.jstv_error import JSTVAuthError, JSTVWebError
+from app.jstv import jstv_db, jstv_web, jstv_auth
+from app.jstv.jstv_web import WS_HOST, ACCESS_TOKEN
+from app.jstv.jstv_error import JSTVAuthError, JSTVWebError
 
 QUIRKY_ANIMALS_LIST = tuple(QUIRKY_ANIMALS_MAP.items())
 

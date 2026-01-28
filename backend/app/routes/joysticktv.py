@@ -5,8 +5,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from pydantic import BaseModel, field_validator
 
-from app.joysticktv import jstv_web, jstv_auth
-from app.joysticktv.jstv_error import JSTVAuthError
+from app.jstv import jstv_web, jstv_auth
+from app.jstv.jstv_error import JSTVAuthError
 
 logger = logging.getLogger(__name__)
 
