@@ -24,7 +24,7 @@
       <input
         type="range"
         min="0"
-        max="100"
+        max="200"
         v-model.number="config.strength"
       />
     </div>

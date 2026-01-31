@@ -60,7 +60,7 @@ RANDOM_DEVICE_NAMES = {
 class VibeConfig(BaseModel):
     hidden: bool = False
     paused: bool = False
-    strength: int = Field(default=100, ge=0, le=100)
+    strength: int = Field(default=100, ge=0, le=200)
 
 
 # ==============================================================================
