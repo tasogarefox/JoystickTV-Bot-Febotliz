@@ -840,18 +840,18 @@ class JoystickTVConnector(WebSocketConnector):
             vibes: tuple[VibeFrame, ...] | None = None
 
             # Basic Levels
-            if 1 <= amount <= 3:
-                vibes = (VibeFrame.new_override(amount + 30, 0.25),)
+            if 1 <= amount <= 1:
+                vibes = (VibeFrame.new_override(amount +  2, 1.00),)
+            elif 2 <= amount <= 3:
+                vibes = (VibeFrame.new_override(amount *  5, 0.50),)
             elif 4 <= amount <= 10:
-                vibes = (VibeFrame.new_override(amount * 10, 0.25),)
-            elif amount == 13:
-                vibes = (VibeFrame.new_override(10, 1.0),)
-            elif 14 <= amount <= 35:
-                vibes = (VibeFrame.new_override(amount * 3, 0.5),)
+                vibes = (VibeFrame.new_override(amount * 10, .025),)
+            elif 13 <= amount <= 35:
+                vibes = (VibeFrame.new_override(amount *  3, 0.50),)
             elif 40 <= amount <= 199:
-                vibes = (VibeFrame.new_override(amount * 2, 0.75),)
+                vibes = (VibeFrame.new_override(amount *  2, 0.75),)
             elif amount >= 200:
-                vibes = (VibeFrame.new_override(amount / 2, 1.0),)
+                vibes = (VibeFrame.new_override(amount /  2, 1.00),)
 
             # Special Commands
             # elif amount == ...:
