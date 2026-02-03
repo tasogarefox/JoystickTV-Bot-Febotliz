@@ -1,27 +1,22 @@
-from typing import Optional, Any, Awaitable, Callable, Iterable
+from typing import Optional, Any, Awaitable, Coroutine, Callable, Iterable
 import asyncio
 import json
 import random
 import websockets
 import html
-from datetime import timedelta
 
-from sqlalchemy import select
-from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import getenv_list
-from app.utils.datetime import utcmin, utcnow
 from app.connector import ConnectorMessage, ConnectorManager, WebSocketConnector
 from app.connectors.warudo import QUIRKY_ANIMALS_MAP
 from app.connectors.buttplug import VibeGroup, VibeFrame, parse_vibes
 
 from app.db.database import get_async_db
-from app.db.models import Channel, Viewer
 
-from app.jstv import jstv_db, jstv_web, jstv_auth
+from app.jstv import jstv_db
 from app.jstv.jstv_web import WS_HOST, ACCESS_TOKEN
-from app.jstv.jstv_error import JSTVAuthError, JSTVWebError
+from app.jstv import jstv_dbstate
 
 QUIRKY_ANIMALS_LIST = tuple(QUIRKY_ANIMALS_MAP.items())
 
@@ -37,74 +32,6 @@ URL = f"{WS_HOST}?token={ACCESS_TOKEN}"
 SUBPROTOCOL_ACTIONABLE = websockets.Subprotocol("actioncable-v1-json")
 
 VIP_USERS = getenv_list("JOYSTICKTV_VIP_USERS")
-
-REWARD_INTERVAL = 300  # point reward interval in seconds
-REWARD_POINTS_PER_MINUTE = 2.0  # points per minute
-REWARD_SUBSCRIBER_MULT = 2.0  # points multiplier for subscribers
-REWARD_FIRST_FOLLOW = 100  # points for first-time followers
-
-MAX_RECOVERY_TIME = REWARD_INTERVAL  # max channel/viewer online status recovery time in seconds
-
-
-# ==============================================================================
-# Helper functions
-
-async def reward_viewer(channel: Channel, viewer: Viewer) -> bool:
-    """
-    Reward a viewer with points and watch time.
-
-    - Only full REWARD_INTERVAL seconds earn points.
-    - Fractional seconds are preserved in rewarded_at for precise future calculations.
-    - Rewards only time that overlaps with the channel being live.
-
-    WARNING: Make sure that viewer and channel presence/online status are up-to-date before calling.
-
-    Args:
-        channel: The Channel instance.
-        viewer: The Viewer instance to reward.
-
-    Returns:
-        True if updated, False otherwise.
-    """
-    # Determine reward window
-    now = utcnow()
-    time_start = max(
-        channel.live_at,
-        viewer.joined_at,
-        viewer.rewarded_at,
-    )
-    time_end = min(
-        now if viewer.is_present else viewer.left_at,
-        now if channel.is_live else channel.offline_at,
-    )
-
-    # Return if no reward is due
-    if time_end <= time_start:
-        return False
-
-    # Round down to the nearest REWARD_INTERVAL
-    intervals = int((time_end - time_start).total_seconds() // REWARD_INTERVAL)
-    time_delta = intervals * REWARD_INTERVAL
-    time_end = time_start + timedelta(seconds=time_delta)
-
-    # Return if no reward is due
-    if time_delta <= 0:
-        return False
-
-    # Calculate points (only complete intervals)
-    # NOTE: `time_delta` is already a multiple of REWARD_INTERVAL
-    points = time_delta / 60 * REWARD_POINTS_PER_MINUTE
-
-    # # TODO: Reenable when we track subscriber status
-    # if viewer.subscribed_at:
-    #     points *= REWARD_SUBSCRIBER_MULT
-
-    # Update viewer
-    viewer.rewarded_at = time_end
-    viewer.watch_time += int(time_delta)
-    viewer.points += points
-
-    return True
 
 
 # ==============================================================================
@@ -125,7 +52,7 @@ class JoystickTVConnector(WebSocketConnector):
         _callback: Callable[[dict[Any, Any], dict[Any, Any]], Awaitable],
         _message: dict[Any, Any],
     ) -> bool:
-        metadata_str = _message.get("metadata") or ""
+        metadata_str: str = _message.get("metadata") or ""
 
         try:
             metadata = json.loads(metadata_str)
@@ -197,6 +124,8 @@ class JoystickTVConnector(WebSocketConnector):
                 self._update_live_channels(db),
             )
 
+            await db.commit()
+
         # WARNING: Must send messages AFTER _update_live_channels() is done to ensure consistent state
         await self.send_live_chats("おはよう世界 Good Morning World <3")
 
@@ -206,117 +135,29 @@ class JoystickTVConnector(WebSocketConnector):
 
         - Rebuilds the live channel cache from current stream state.
         - Reconciles channel live/offline state with the database.
-        - If downtime exceeds `MAX_RECOVERY_TIME`, marks all present viewers
-          offline at a safe cutoff time and rewards them up to that point.
         """
-        self.logger.info("Updating live channels...")
-
+        # Clear live channel state
         self.live_channels.clear()
 
-        now = utcnow()
-        last_event_at = await jstv_db.get_last_event_received_time(db) or utcmin
+        # Reconcile channel state
+        channels = await jstv_dbstate.on_connected(db)
 
-        gap_seconds = (now - last_event_at).total_seconds()
-        within_recovery_window = gap_seconds <= MAX_RECOVERY_TIME  # Are we within the recovery window?
-
-        cutoff_at = min(now, last_event_at + timedelta(seconds=MAX_RECOVERY_TIME))
-
-        # Load all channels and their access tokens
-        result = await db.execute(select(Channel))
-
-        # Fetch stream settings for all channels in parallel
-        async def get_live_status_helper(channel: Channel) -> tuple[bool, Channel]:
-            try:
-                access_token = await jstv_auth.get_access_token(channel.channel_id)
-                settings = await jstv_web.fetch_stream_settings(access_token)
-            except (JSTVAuthError, JSTVWebError):
-                return False, channel
-
-            return settings.live, channel
-
-        tasks = [
-            get_live_status_helper(channel)
-            for channel in result.scalars().all()
-        ]
-
-        # Process results as they come
-        for task in asyncio.as_completed(tasks):
-            is_live, channel = await task
-
-            # Maintain live channel cache
-            if is_live:
+        # Rebuild live channel cache
+        for channel in channels:
+            if channel.is_live:
                 self.live_channels[channel.channel_id] = LiveChannel()
 
-            # Trusted reconnection: no forced recovery
-            if within_recovery_window:
-                if is_live:
-                    channel.set_live(now)
-                else:
-                    channel.set_offline(now)
-                continue
-
-            # Untrusted state: force reconciliation
-            if is_live != channel.is_live:
-                if is_live:  # channel.is_live == False
-                    channel.set_live(now)
-                else:  # channel.is_live == True
-                    channel.force_offline(max(channel.live_at, cutoff_at))
-
-            result = await db.execute(
-                select(Viewer).filter_by(channel_id=channel.id, is_present=True),
-            )
-            viewers = result.scalars().all()
-
-            if viewers:
-                self.logger.info(
-                    "Fail-safe: Cannot reconcile channel %s viewer presence after %d minutes of disconnection - "
-                    "marking %d viewers as offline",
-                    channel.channel_id,
-                    gap_seconds // 60,
-                    len(viewers),
-                )
-
-                # Mark all present viewers as offline and reward them up until `cutoff_at`
-                for viewer in viewers:
-                    viewer.force_offline(max(viewer.joined_at, cutoff_at))
-                    await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
-
-        await db.commit()
-
     async def on_disconnected(self):
-        """
-        Handle loss of connection or shutdown.
-
-        - Rewards all currently-present viewers **only if their channel is live**.
-        - Does NOT mark viewers offline or modify channel state.
-        - Viewer cleanup and offline inference are deferred to recovery on reconnect.
-        """
+        """Handle loss of connection or shutdown."""
         self.logger.info("Connection closed")
 
         async with get_async_db() as db:
-            # Select viewers who are currently present and in a live channel
-            result = await db.execute(
-                select(Viewer)
-                .join(Viewer.channel)
-                .options(joinedload(Viewer.channel))
-                .filter(Viewer.is_present == True, Channel.is_live == True),
-            )
-            viewers = result.scalars().all()
-            if viewers:
-                self.logger.info(
-                    "Fail-safe: Disconnected with %d viewers - rewarding viewers up until now",
-                    len(viewers),
-                )
-
-                for viewer in viewers:
-                    # NOTE: We rely on recovery to mark viewers as offline later, if needed
-                    await reward_viewer(viewer.channel, viewer)  # WARNING: Channel and viewer must be up-to-date
-
+            await jstv_dbstate.on_disconnected(db)
             await db.commit()
 
     async def on_message(self, data: dict[Any, Any]):
         async with get_async_db() as db:
-            await jstv_db.update_last_event_received_time(db)
+            await jstv_dbstate.on_server_message(db)
             await db.commit()
 
         if 'type' in data:
@@ -392,12 +233,8 @@ class JoystickTVConnector(WebSocketConnector):
                     self.on_stream_dropped_in, message)
 
     async def on_stream_started(self, message: dict[Any, Any]):
-        """
-        Handle a channel transitioning to live.
-
-        - Updates in-memory live channel cache.
-        """
-        channel_id = message.get("channelId")
+        """Handle a channel transitioning to live."""
+        channel_id: str | None = message.get("channelId")
         if not channel_id:
             return
 
@@ -409,20 +246,12 @@ class JoystickTVConnector(WebSocketConnector):
             live_channel = self.live_channels[channel_id] = LiveChannel()
 
         async with get_async_db() as db:
-            channel = await jstv_db.get_or_create_channel(db, channel_id)
-
-            # Mark channel live
-            channel.set_live()
-
+            await jstv_dbstate.on_stream_started(db, channel_id)
             await db.commit()
 
     async def on_stream_resuming(self, message: dict[Any, Any]):
-        """
-        Handle a channel resuming its stream after a short disconnect.
-
-        - Updates in-memory live channel cache.
-        """
-        channel_id = message.get("channelId")
+        """Handle a channel resuming its stream after a short disconnect."""
+        channel_id: str | None = message.get("channelId")
         if not channel_id:
             return
 
@@ -434,24 +263,12 @@ class JoystickTVConnector(WebSocketConnector):
             live_channel = self.live_channels[channel_id] = LiveChannel()
 
         async with get_async_db() as db:
-            channel = await jstv_db.get_or_create_channel(db, channel_id)
-
-            # Mark channel live
-            channel.set_live()
-
+            await jstv_dbstate.on_stream_resuming(db, channel_id)
             await db.commit()
 
     async def on_stream_ended(self, message: dict[Any, Any]):
-        """
-        Handle a channel transitioning to offline.
-
-        - Removes the channel from the live cache.
-        - Marks the channel as offline in the database.
-        - Rewards all currently-present viewers up to the end of the stream.
-
-        Viewer presence cleanup is deferred to leave events or recovery logic.
-        """
-        channel_id = message.get("channelId")
+        """Handle a channel transitioning to offline."""
+        channel_id: str | None = message.get("channelId")
         if not channel_id:
             return
 
@@ -461,57 +278,27 @@ class JoystickTVConnector(WebSocketConnector):
         self.live_channels.pop(channel_id, None)
 
         async with get_async_db() as db:
-            channel = await jstv_db.get_or_create_channel(db, channel_id)
-
-            # Mark channel offline; timestamps are handled by the model
-            channel.set_offline()
-
-            # Reward all viewers still marked as present
-            result = await db.execute(
-                select(Viewer).filter_by(channel_id=channel_id, is_present=True),
-            )
-            viewers = result.scalars().all()
-
-            if viewers:
-                self.logger.info(
-                    "Fail-safe: Stream %s ended with %d viewers - rewarding viewers up until now",
-                    channel_id, len(viewers),
-                )
-
-                for viewer in viewers:
-                    # NOTE: We do NOT mark viewers offline here.
-                    #       Offline inference is handled by leave events or recovery.
-                    await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
-
+            await jstv_dbstate.on_stream_ended(db, channel_id)
             await db.commit()
 
     async def on_new_chat(self, message: dict[Any, Any]):
-        text_lower = (message.get("text") or "").lower()
-        bot_command_lower = (message.get("botCommand") or "").lower()
-        channel_id = message.get("channelId")
-        username = message.get("author", {}).get("username")
-
+        channel_id: str | None = message.get("channelId")
+        username: str | None = message.get("author", {}).get("username")
         if not channel_id or not username:
             return
 
+        text_lower: str = (message.get("text") or "").lower()
+        bot_command_lower: str = (message.get("botCommand") or "").lower()
+
         async with get_async_db() as db:
             channel = await jstv_db.get_or_create_channel(db, channel_id)
-            viewer = await jstv_db.get_or_create_viewer(db, channel, username)
+            user = await jstv_db.get_or_create_user(db, username)
+            viewer = await jstv_db.get_or_create_viewer(db, channel, user)
 
-            # Update last message time
-            viewer.chatted_at = utcnow()
-
-            # Fail-safe: set viewer to online
-            if not viewer.is_present:
-                self.logger.info(
-                    "Fail-safe: Offline viewer %s chatted in channel %s - marking as online",
-                    username, channel_id,
-                )
-
-                viewer.join()
+            await jstv_dbstate.on_new_chat(db, channel, user, viewer)
 
             if bot_command_lower in ["points", "p"]:
-                await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
+                await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
                 await self.send_chat_reply(
                     message,
                     f"has {int(viewer.points)} points",
@@ -519,7 +306,7 @@ class JoystickTVConnector(WebSocketConnector):
                 )
 
             elif bot_command_lower == "test_tip":
-                slug = message["author"]["slug"]
+                slug: str = message["author"]["slug"]
                 if slug != message["streamer"]["slug"]:
                     await self.send_chat_reply(
                         message,
@@ -530,8 +317,8 @@ class JoystickTVConnector(WebSocketConnector):
 
                 amount = 0
 
-                arg = message.get("botCommandArg")
-                if arg is not None:
+                arg: str | None = message.get("botCommandArg")
+                if arg:
                     try:
                         amount = int(arg)
                     except ValueError:
@@ -673,7 +460,7 @@ class JoystickTVConnector(WebSocketConnector):
                 )
 
             elif any(x == bot_command_lower for x in ["viewersign", "sign", "showsign"]):
-                text = message.get("botCommandArg")
+                text: str | None = message.get("botCommandArg")
                 if not text:
                     await self.send_chat_reply(
                         message,
@@ -691,7 +478,7 @@ class JoystickTVConnector(WebSocketConnector):
                 )
 
             elif bot_command_lower in ["vibe_disable", "vibe_delay"]:
-                slug = message["author"]["slug"]
+                slug: str = message["author"]["slug"]
                 if slug != message["streamer"]["slug"]:
                     await self.send_chat_reply(
                         message,
@@ -714,7 +501,7 @@ class JoystickTVConnector(WebSocketConnector):
                 return
 
             elif bot_command_lower in ["vibe_stop", "vibe_clear"]:
-                slug = message["author"]["slug"]
+                slug: str = message["author"]["slug"]
                 if slug != message["streamer"]["slug"]:
                     await self.send_chat_reply(
                         message,
@@ -727,7 +514,7 @@ class JoystickTVConnector(WebSocketConnector):
                 return
 
             elif bot_command_lower == "vibe":
-                # slug = message["author"]["slug"]
+                # slug: str = message["author"]["slug"]
                 # if slug != message["streamer"]["slug"] and slug.lower() not in VIP_USERS:
                 #     await self.send_chat_reply(
                 #         message,
@@ -736,7 +523,7 @@ class JoystickTVConnector(WebSocketConnector):
                 #     )
                 #     return
 
-                vibestr = message.get("botCommandArg") or ""
+                vibestr: str | None = message.get("botCommandArg")
                 try:
                     if not vibestr:
                         raise ValueError
@@ -777,163 +564,147 @@ class JoystickTVConnector(WebSocketConnector):
                 await self.send_warudo("Dildo")
 
             elif bot_command_lower:
-                args = [bot_command_lower]
-                args += (message.get("botCommandArg") or "").split(" ")
+                args: list[str] = str(message.get("botCommandArg") or "").split(" ")
+                args.insert(0, bot_command_lower)
                 await self.send_warudo("OnChatCmd", args)
 
             await db.commit()  # NOTE: must commit after any usage of db
 
     async def on_enter_stream(self, message: dict[Any, Any]):
-        """
-        Handle a viewer joining a channel.
-
-        - Marks the viewer as present.
-        - Does NOT handle rewards; rewarding occurs on leave, stream end or recovery.
-
-        Notes:
-        - This event may arrive while the channel is offline.
-        """
-        username = message.get("text")
-        channel_id = message.get("channelId")
-        if not username or not channel_id:
+        """Handle a viewer joining a channel."""
+        channel_id: str | None = message.get("channelId")
+        username: str | None = message.get("text")
+        if not channel_id or not username:
             return
 
         async with get_async_db() as db:
-            viewer = await jstv_db.get_or_create_viewer(db, channel_id, username)
-
-            # Handle viewer join
-            viewer.join()
-
+            await jstv_dbstate.on_enter_stream(db, channel_id, username, None)
             await db.commit()  # NOTE: must commit after any usage of db
 
     async def on_leave_stream(self, message: dict[Any, Any]):
-        """
-        Handle a viewer leaving a channel.
-
-        - Marks the viewer as not present.
-        - Rewards the viewer.
-
-        Notes:
-        - Viewers who joined while the channel was offline are NOT rewarded here.
-          Their potential reward (if any) is handled by `on_stream_ended` or recovery.
-        """
-        username = message.get("text")
-        channel_id = message.get("channelId")
-        if not username or not channel_id:
+        """Handle a viewer leaving a channel."""
+        channel_id: str | None = message.get("channelId")
+        username: str | None = message.get("text")
+        if not channel_id or not username:
             return
 
         async with get_async_db() as db:
-            channel = await jstv_db.get_or_create_channel(db, channel_id)
-            viewer = await jstv_db.get_or_create_viewer(db, channel, username)
-
-            if not viewer.is_present:
-                # Viewer has already left
-                self.logger.info(
-                    "Fail-safe: Viewer already left channel %s at %s - ignoring",
-                    channel_id, viewer.left_at,
-                )
-
-            else:
-                # Handle viewer leaving and reward
-                viewer.leave()
-                await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
-
+            await jstv_dbstate.on_leave_stream(db, channel_id, username, None)
             await db.commit()  # NOTE: must commit after any usage of db
 
     async def on_followed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        channel_id = message.get("channelId") or ""
-        username = metadata.get("who") or ""
-        if not username or not channel_id:
+        channel_id: str | None = message.get("channelId")
+        username: str | None = metadata.get("who")
+        if not channel_id or not username:
             return
 
         async with get_async_db() as db:
-            channel = await jstv_db.get_or_create_channel(db, channel_id)
-            viewer = await jstv_db.get_or_create_viewer(db, channel, username)
+            points = await jstv_dbstate.on_followed(db, channel_id, username, None)
+            if points > 0:
+                # tasks.append(self.send_chat_reply(message, (
+                #     f"Thanks for following, {username}!"
+                #     f" You've been rewarded {points} points."
+                # ), whisper=True))
+                pass
 
-            tasks = []
-
-            if viewer.followed_at is None:
-                viewer.followed_at = utcnow()
-
-                if REWARD_FIRST_FOLLOW > 0:
-                    viewer.points += REWARD_FIRST_FOLLOW
-
-                    # tasks.append(self.send_chat_reply(message, (
-                    #     f"Thanks for following {username}!"
-                    #     f" You've been rewarded {REWARD_FIRST_FOLLOW} points."
-                    # ), whisper=True))
-
-            tasks.append(self.send_warudo("OnFollowed", metadata.get("number_of_followers") or 0))
-
-            await asyncio.gather(*tasks)
+            number_of_followers: int = metadata.get("number_of_followers") or 0
+            await self.send_warudo("OnFollowed", number_of_followers)
 
             await db.commit()  # NOTE: must commit after any usage of db
 
     async def on_subscribed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        await self.send_warudo("OnSubscribed", str(metadata.get("who")))
+        channel_id: str | None = message.get("channelId")
+        username: str | None = metadata.get("who")
+        if not channel_id or not username:
+            return
+
+        async with get_async_db() as db:
+            points = await jstv_dbstate.on_subscribed(db, channel_id, username, None)
+            if points > 0:
+                # tasks.append(self.send_chat_reply(message, (
+                #     f"Thanks for subscribing, {username}!"
+                #     f" You've been rewarded {points} points."
+                # ), whisper=True))
+                pass
+
+            await self.send_warudo("OnSubscribed", username)
+
+            await db.commit()  # NOTE: must commit after any usage of db
 
     async def on_tipped(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         OVERRIDE_VIBES = True
 
-        channel_id = message.get("channelId") or ""
-        username = metadata.get("who") or ""
-        amount = metadata.get("how_much") or 0
-        tasks = []
+        channel_id: str | None = message.get("channelId")
+        username: str | None = metadata.get("who")
+        if not channel_id or not username:
+            return
 
-        if not OVERRIDE_VIBES:
-            tasks.append(self.talkto("Buttplug", "disable", 180))
+        amount: int = metadata.get("how_much") or 0
 
-        else:
-            vibes: tuple[VibeFrame, ...] | None = None
+        async with get_async_db() as db:
+            tasks: list[Coroutine[Any, Any, None]] = []
 
-            # Basic Levels
-            if 1 <= amount <= 1:
-                vibes = (VibeFrame.new_override(amount +  2, 1.00),)
-            elif 2 <= amount <= 3:
-                vibes = (VibeFrame.new_override(amount *  5, 0.50),)
-            elif 4 <= amount <= 10:
-                vibes = (VibeFrame.new_override(amount * 10, .025),)
-            elif 13 <= amount <= 35:
-                vibes = (VibeFrame.new_override(amount *  3, 0.50),)
-            elif 40 <= amount <= 199:
-                vibes = (VibeFrame.new_override(amount *  2, 0.75),)
-            elif amount >= 200:
-                vibes = (VibeFrame.new_override(amount /  2, 1.00),)
+            points = await jstv_dbstate.on_tipped(db, channel_id, username, None, amount)
+            if points > 0:
+                # tasks.append(self.send_chat_reply(message, (
+                #     f"Thanks for tipping, {username}!"
+                #     f" You've been rewarded {points} points."
+                # ), whisper=True))
+                pass
 
-            # Special Commands
-            # elif amount == ...:
-            #     vibes = ...  # Random Level
-            elif amount == 11:
-                vibes = parse_vibes("50% 30-90s")  # Random Time
-            elif amount == 12:
-                vibes = parse_vibes("12s 0%")  # Pause the Queue
-            elif amount == 36:
-                vibes = parse_vibes("1s 0% 20% 40% 60% 80% 100% 72t")  # Earthquake Pattern
-            elif amount == 37:
-                vibes = parse_vibes("1s 0% 10% 20% 30% 40% 50% 60% 70% 100% 74t")  # Fireworks Pattern
-            elif amount == 38:
-                vibes = parse_vibes("1.5s 1..100% 1.5s 100..1% 76t")  # Wave Pattern
-            elif amount == 39:
-                vibes = parse_vibes("1s 0% 100% 78t")  # Pulse Pattern
+            if not OVERRIDE_VIBES:
+                tasks.append(self.talkto("Buttplug", "disable", 180))
 
-            if vibes:
-                vibe_group = VibeGroup(vibes, channel_id=channel_id, username=username)
-                tasks.append(self.talkto("Buttplug", "vibe", vibe_group))
+            else:
+                vibes: tuple[VibeFrame, ...] | None = None
 
-        tasks.append(self.send_warudo("OnTipped", amount))
+                # Basic Levels
+                if 1 <= amount <= 1:
+                    vibes = (VibeFrame.new_override(amount +  2, 1.00),)
+                elif 2 <= amount <= 3:
+                    vibes = (VibeFrame.new_override(amount *  5, 0.50),)
+                elif 4 <= amount <= 10:
+                    vibes = (VibeFrame.new_override(amount * 10, .025),)
+                elif 13 <= amount <= 35:
+                    vibes = (VibeFrame.new_override(amount *  3, 0.50),)
+                elif 40 <= amount <= 199:
+                    vibes = (VibeFrame.new_override(amount *  2, 0.75),)
+                elif amount >= 200:
+                    vibes = (VibeFrame.new_override(amount /  2, 1.00),)
 
-        tip_menu_item = str(metadata.get("tip_menu_item") or "")
-        if tip_menu_item:
-            tasks.append(self.send_warudo("OnRedeemed", tip_menu_item))
+                # Special Commands
+                # elif amount == ...:
+                #     vibes = ...  # Random Level
+                elif amount == 11:
+                    vibes = parse_vibes("50% 30-90s")  # Random Time
+                elif amount == 12:
+                    vibes = parse_vibes("12s 0%")  # Pause the Queue
+                elif amount == 36:
+                    vibes = parse_vibes("1s 0% 20% 40% 60% 80% 100% 72t")  # Earthquake Pattern
+                elif amount == 37:
+                    vibes = parse_vibes("1s 0% 10% 20% 30% 40% 50% 60% 70% 100% 74t")  # Fireworks Pattern
+                elif amount == 38:
+                    vibes = parse_vibes("1.5s 1..100% 1.5s 100..1% 76t")  # Wave Pattern
+                elif amount == 39:
+                    vibes = parse_vibes("1s 0% 100% 78t")  # Pulse Pattern
 
-        await asyncio.gather(*tasks)
+                if vibes:
+                    vibe_group = VibeGroup(vibes, channel_id=channel_id, username=username)
+                    tasks.append(self.talkto("Buttplug", "vibe", vibe_group))
 
-        # TODO: reward points
+            tasks.append(self.send_warudo("OnTipped", amount))
+
+            tip_menu_item: str = str(metadata.get("tip_menu_item") or "")
+            if tip_menu_item:
+                tasks.append(self.send_warudo("OnRedeemed", tip_menu_item))
+
+            await asyncio.gather(*tasks)
+            await db.commit()
 
     async def on_tip_goal_increased(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         step = 100
-        current = metadata.get("current") or 0
-        previous = metadata.get("previous") or 0
+        current: int = metadata.get("current") or 0
+        previous: int = metadata.get("previous") or 0
 
         tasks = [
             self.send_warudo("OnTipGoalIncreased", [current, previous]),
@@ -946,15 +717,33 @@ class JoystickTVConnector(WebSocketConnector):
         await asyncio.gather(*tasks)
 
     async def on_milestone_completed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        await self.send_warudo("OnMilestoneCompleted", metadata.get("amount") or 0)
+        amount: int = metadata.get("amount") or 0
+        await self.send_warudo("OnMilestoneCompleted", amount)
 
     async def on_tip_goal_met(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        await self.send_warudo("OnTipGoalMet", metadata.get("amount") or 0)
+        amount: int = metadata.get("amount") or 0
+        await self.send_warudo("OnTipGoalMet", amount)
 
     async def on_stream_dropped_in(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        await self.send_warudo("OnStreamDroppedIn", metadata.get("number_of_viewers") or 0)
+        channel_id: str | None = message.get("channelId")
+        username: str | None = metadata.get("who")
+        if not channel_id or not username:
+            return
 
-        # TODO: reward points?
+        number_of_viewers: int = metadata.get("number_of_viewers") or 0
+
+        async with get_async_db() as db:
+            points = await jstv_dbstate.on_raided(db, channel_id, username, None, number_of_viewers)
+            if points > 0:
+                # tasks.append(self.send_chat_reply(message, (
+                #     f"Thanks for the drop-in, {username}!"
+                #     f" You've been rewarded {points} points."
+                # ), whisper=True))
+                pass
+
+            await self.send_warudo("OnStreamDroppedIn", number_of_viewers)
+
+            await db.commit()
 
     async def send_chat(
         self,
@@ -1021,5 +810,5 @@ class JoystickTVConnector(WebSocketConnector):
     async def send_warudo(self, action: str, data: Any = None):
         await self.talkto("Warudo", "action", {"action": action, "data": data})
 
-    async def send_streamerbot(self, action: str, args: dict[str, Any] = {}):
-        await self.talkto("StreamerBot", "action", {"name": action, "args": args})
+    async def send_streamerbot(self, action: str, args: dict[str, Any] | None = None):
+        await self.talkto("StreamerBot", "action", {"name": action, "args": args or {}})
