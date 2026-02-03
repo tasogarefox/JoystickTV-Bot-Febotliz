@@ -1,7 +1,6 @@
 from typing import Optional, Any, Awaitable, Callable, Iterable
 import asyncio
 import json
-import re
 import random
 import websockets
 import html
@@ -37,10 +36,12 @@ URL = f"{WS_HOST}?token={ACCESS_TOKEN}"
 
 SUBPROTOCOL_ACTIONABLE = websockets.Subprotocol("actioncable-v1-json")
 
+VIP_USERS = getenv_list("JOYSTICKTV_VIP_USERS")
+
 REWARD_INTERVAL = 300  # point reward interval in seconds
 REWARD_POINTS_PER_MINUTE = 2.0  # points per minute
 REWARD_SUBSCRIBER_MULT = 2.0  # points multiplier for subscribers
-VIP_USERS = getenv_list("JOYSTICKTV_VIP_USERS")
+REWARD_FIRST_FOLLOW = 100  # points for first-time followers
 
 MAX_RECOVERY_TIME = REWARD_INTERVAL  # max channel/viewer online status recovery time in seconds
 
@@ -147,24 +148,33 @@ class JoystickTVConnector(WebSocketConnector):
             return True
 
         if msg.action == "chat":
-            for i, line in enumerate(msg.data["text"].split("\n")):
+            text: str = msg.data["text"].strip()
+            channelId: str = msg.data["channelId"]
+            mention: str | None = msg.data.get("mention")
+            whisper: str | None = msg.data.get("whisper")
+
+            if mention:
+                text = f"@{mention} {text}"
+
+            for line in msg.data["text"].split("\n"):
                 line = line.rstrip()
                 if not line:
                     continue
 
-                if i == 0:
-                    at = msg.data.get("at")
-                    if at is not None:
-                        line = f"@{at} {line}"
+                data = {
+                    "action": "send_message",
+                    "text": html.escape(line),
+                    "channelId": channelId,
+                }
+
+                if whisper:
+                    data["action"] = "send_whisper"
+                    data["username"] = whisper
 
                 await self.sendnow({
                     "command": "message",
                     "identifier": GATEWAY_IDENTIFIER,
-                    "data": json.dumps({
-                        "action": "send_message",
-                        "text": html.escape(line),
-                        "channelId": msg.data["channelId"],
-                    }),
+                    "data": json.dumps(data),
                 })
 
             return True
@@ -502,7 +512,11 @@ class JoystickTVConnector(WebSocketConnector):
 
             if bot_command_lower in ["points", "p"]:
                 await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
-                await self.send_chat_reply(message, f"has {int(viewer.points)} points", at=True)
+                await self.send_chat_reply(
+                    message,
+                    f"has {int(viewer.points)} points",
+                    mention=True,
+                )
 
             elif bot_command_lower == "test_tip":
                 slug = message["author"]["slug"]
@@ -510,7 +524,7 @@ class JoystickTVConnector(WebSocketConnector):
                     await self.send_chat_reply(
                         message,
                         f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                        at=True,
+                        mention=True,
                     )
                     return
 
@@ -650,16 +664,25 @@ class JoystickTVConnector(WebSocketConnector):
                 animal, prop = random.choice(QUIRKY_ANIMALS_LIST)
 
                 await asyncio.gather(
-                    self.send_chat_reply(message, f"has been plushified into a {animal}", at=True),
+                    self.send_chat_reply(
+                        message,
+                        f"has been plushified into a {animal}",
+                        mention=True,
+                    ),
                     self.send_warudo("Plushify", [username, prop]),
                 )
 
             elif any(x == bot_command_lower for x in ["viewersign", "sign", "showsign"]):
                 text = message.get("botCommandArg")
                 if not text:
-                    await self.send_chat_reply(message, f"Usage: !{bot_command_lower} <TEXT>", at=True)
-                else:
-                    await self.send_warudo("ViewerSign", text)
+                    await self.send_chat_reply(
+                        message,
+                        f"Usage: !{bot_command_lower} <TEXT>",
+                        mention=True,
+                    )
+                    return
+
+                await self.send_warudo("ViewerSign", text)
 
             elif bot_command_lower == "clip":
                 await asyncio.gather(
@@ -673,7 +696,7 @@ class JoystickTVConnector(WebSocketConnector):
                     await self.send_chat_reply(
                         message,
                         f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                        at=True,
+                        mention=True,
                     )
                     return
 
@@ -683,7 +706,7 @@ class JoystickTVConnector(WebSocketConnector):
                     await self.send_chat_reply(
                         message,
                         f"Usage: !{bot_command_lower} [SECONDS]",
-                        at=True,
+                        mention=True,
                     )
                     return
 
@@ -696,7 +719,7 @@ class JoystickTVConnector(WebSocketConnector):
                     await self.send_chat_reply(
                         message,
                         f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                        at=True,
+                        mention=True,
                     )
                     return
 
@@ -709,7 +732,7 @@ class JoystickTVConnector(WebSocketConnector):
                 #     await self.send_chat_reply(
                 #         message,
                 #         f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                #         at=True,
+                #         mention=True,
                 #     )
                 #     return
 
@@ -730,7 +753,7 @@ class JoystickTVConnector(WebSocketConnector):
                         f"; !{bot_command_lower} 0.5s 50% 0% 5r"
                         # f"; !{bot_command_lower} deviceA 5s 50%"
                         # f\n"Tokens may appear in any order. Percent and seconds pair automatically. Devices are optional."
-                    ).strip(), at=True)
+                    ).strip(), mention=True)
 
                 else:
                     await self.talkto("Buttplug", "vibe", VibeGroup(
@@ -818,9 +841,33 @@ class JoystickTVConnector(WebSocketConnector):
             await db.commit()  # NOTE: must commit after any usage of db
 
     async def on_followed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        await self.send_warudo("OnFollowed", metadata.get("number_of_followers") or 0)
+        channel_id = message.get("channelId") or ""
+        username = metadata.get("who") or ""
+        if not username or not channel_id:
+            return
 
-        # TODO: reward points
+        async with get_async_db() as db:
+            channel = await jstv_db.get_or_create_channel(db, channel_id)
+            viewer = await jstv_db.get_or_create_viewer(db, channel, username)
+
+            tasks = []
+
+            if viewer.followed_at is None:
+                viewer.followed_at = utcnow()
+
+                if REWARD_FIRST_FOLLOW > 0:
+                    viewer.points += REWARD_FIRST_FOLLOW
+
+                    # tasks.append(self.send_chat_reply(message, (
+                    #     f"Thanks for following {username}!"
+                    #     f" You've been rewarded {REWARD_FIRST_FOLLOW} points."
+                    # ), whisper=True))
+
+            tasks.append(self.send_warudo("OnFollowed", metadata.get("number_of_followers") or 0))
+
+            await asyncio.gather(*tasks)
+
+            await db.commit()  # NOTE: must commit after any usage of db
 
     async def on_subscribed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
         await self.send_warudo("OnSubscribed", str(metadata.get("who")))
@@ -909,27 +956,66 @@ class JoystickTVConnector(WebSocketConnector):
 
         # TODO: reward points?
 
-    async def send_chat(self, channel_id: str, text: str, *, at: Optional[str] = None):
+    async def send_chat(
+        self,
+        channel_id: str,
+        text: str,
+        *,
+        mention: Optional[str] = None,
+        whisper: Optional[str] = None,
+    ):
         await self.talk("chat", {
             "text": text,
             "channelId": channel_id,
-            "at": at,
+            "mention": mention,
+            "whisper": whisper,
         })
 
-    async def send_channel_chats(self, channel_ids: Iterable[str], text: str, *, at: Optional[str] = None):
+    async def send_channel_chats(
+        self,
+        channel_ids: Iterable[str],
+        text: str,
+        *,
+        mention: Optional[str] = None,
+        whisper: Optional[str] = None,
+    ):
         await asyncio.gather(*[
-            self.send_chat(channel_id, text, at=at)
+            self.send_chat(
+                channel_id,
+                text,
+                mention=mention,
+                whisper=whisper,
+            )
             for channel_id in channel_ids
         ])
 
-    async def send_live_chats(self, text: str, *, at: Optional[str] = None):
-        await self.send_channel_chats(self.live_channels.keys(), text, at=at)
+    async def send_live_chats(
+        self,
+        text: str,
+        *,
+        mention: Optional[str] = None,
+        whisper: Optional[str] = None,
+    ):
+        await self.send_channel_chats(
+            self.live_channels.keys(),
+            text,
+            mention=mention,
+            whisper=whisper,
+        )
 
-    async def send_chat_reply(self, ctxmsg: dict[Any, Any], text: str, *, at: bool = False):
+    async def send_chat_reply(
+        self,
+        ctxmsg: dict[Any, Any],
+        text: str,
+        *,
+        mention: bool = False,
+        whisper: bool = False,
+    ):
         await self.send_chat(
             channel_id=ctxmsg["channelId"],
             text=text,
-            at=ctxmsg["author"]["username"] if at else None,
+            mention=ctxmsg["author"]["username"] if mention else None,
+            whisper=ctxmsg["author"]["username"] if whisper else None,
         )
 
     async def send_warudo(self, action: str, data: Any = None):
