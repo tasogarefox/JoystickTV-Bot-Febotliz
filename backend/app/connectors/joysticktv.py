@@ -607,8 +607,7 @@ class JoystickTVConnector(WebSocketConnector):
                 # ), whisper=True))
                 pass
 
-            number_of_followers: int = metadata.get("number_of_followers") or 0
-            await self.send_warudo("OnFollowed", number_of_followers)
+            await self.send_warudo("OnFollowed")
 
             await db.commit()  # NOTE: must commit after any usage of db
 
