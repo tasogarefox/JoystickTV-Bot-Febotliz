@@ -363,6 +363,11 @@ async def on_new_chat(
     points = REWARD_CHATTED_ONCE if viewer.chatted_at is None else REWARD_CHATTED_FIXED
     points = max(0, points)
 
+    if points > 0:
+        logger.info((
+            "User %s chatted in channel %s; rewarding %d points"
+        ), username, channel_id, points)
+
     # Update viewer
     viewer.chatted_at = utcnow()
     viewer.points += points
@@ -385,8 +390,8 @@ async def on_followed(
     user: User | str,
     viewer: Viewer | None,
 ) -> float:
-    # channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    # username = user.username if isinstance(user, User) else user
+    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
+    username = user.username if isinstance(user, User) else user
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
@@ -394,6 +399,11 @@ async def on_followed(
     points = 0
     points += REWARD_FOLLOWED_ONCE if viewer.followed_at is None else 0
     points = max(0, points)
+
+    if points > 0:
+        logger.info((
+            "User %s followed channel %s; rewarding %d points"
+        ), username, channel_id, points)
 
     # Update viewer
     viewer.points += points
@@ -408,8 +418,8 @@ async def on_subscribed(
     user: User | str,
     viewer: Viewer | None,
 ) -> float:
-    # channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    # username = user.username if isinstance(user, User) else user
+    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
+    username = user.username if isinstance(user, User) else user
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
@@ -417,6 +427,11 @@ async def on_subscribed(
     points = REWARD_SUBSCRIBED_FIXED
     points += REWARD_SUBSCRIBED_ONCE if viewer.subscribed_at is None else 0
     points = max(0, points)
+
+    if points > 0:
+        logger.info((
+            "User %s subscribed to channel %s; rewarding %d points"
+        ), username, channel_id, points)
 
     # Update viewer
     viewer.points += points
@@ -439,11 +454,15 @@ async def on_tipped(
     if points <= 0:
         return 0
 
-    # channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    # username = user.username if isinstance(user, User) else user
+    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
+    username = user.username if isinstance(user, User) else user
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
+
+    logger.info((
+        "User %s tipped %d tokens to channel %s; rewarding %d points"
+    ), username, amount, channel_id, points)
 
     viewer.points += points
     return points
@@ -462,11 +481,15 @@ async def on_raided(
     if points <= 0:
         return 0
 
-    # channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    # username = user.username if isinstance(user, User) else user
+    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
+    username = user.username if isinstance(user, User) else user
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
+
+    logger.info((
+        "User %s raided channel %s with %d viewers; rewarding %d points"
+    ), username, channel_id, viewer_count, points)
 
     viewer.points += points
     return points
