@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from buttplug import (
     Client, WebsocketConnector, ProtocolSpec,
-    ServerNotFoundError, DisconnectedError,
+    ServerNotFoundError, DisconnectedError, ConnectorError,
 )
 
 from app.utils.asyncio import async_select
@@ -411,8 +411,14 @@ class ButtplugConnector(BaseConnector):
             await self.client.connect(self.connector)
             yield
         finally:
-            if self.client.connected:
-                asyncio.create_task(self.client.disconnect())
+            asyncio.create_task(self.__try_disconnect())
+
+    async def __try_disconnect(self) -> None:
+        if self.client.connected:
+            try:
+                await self.client.disconnect()
+            except ConnectorError as e:
+                self.logger.warning("Error while disconnecting: %s", e)
 
     async def talk_receive(self, msg: ConnectorMessage) -> bool:
         self.logger.info("Connector message received: %r, data: %s", msg, msg.data)
@@ -458,9 +464,9 @@ class ButtplugConnector(BaseConnector):
             return await super().on_error(error)
 
     async def main_loop(self):
-        await asyncio.gather(
-            self._scan_loop(),
-            self._vibe_loop(),
+        await async_select(
+            asyncio.create_task(self._scan_loop()),
+            asyncio.create_task(self._vibe_loop()),
         )
 
     async def _scan_loop(self):
