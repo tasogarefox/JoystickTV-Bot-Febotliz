@@ -15,7 +15,6 @@ from buttplug import (
 
 from app.utils.asyncio import async_select
 from app.connector import ConnectorMessage, ConnectorManager, BaseConnector
-from app.routes.ws import vibegraph
 
 
 # ==============================================================================
@@ -490,6 +489,8 @@ class ButtplugConnector(BaseConnector):
             await self._update_devices()
 
     async def _vibe_loop(self):
+        from app.routes.ws import vibegraph
+
         devices: set[str] = set()
 
         shutdown = False
@@ -579,6 +580,8 @@ class ButtplugConnector(BaseConnector):
         group: VibeGroup,
         vibe: VibeFrame | None,
     ) -> bool:
+        from app.routes.ws import vibegraph
+
         vibe_delay: float = vibe.duration if vibe is not None else 0
         shutdown = self._shutdown.is_set()
         active = False
@@ -641,6 +644,7 @@ class ButtplugConnector(BaseConnector):
         return tshutdown in done
 
     async def _update_devices(self) -> set[str]:
+        from app.routes.ws import vibegraph
         devices = set(x.name for x in self.client.devices.values())
         if devices != self._devices:
             self._devices = devices

@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    ForeignKey, UniqueConstraint,
+    ForeignKey, Index, UniqueConstraint, CheckConstraint,
     String, Integer, Float, Boolean,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -11,7 +11,8 @@ from app.utils.datetime import utcnow
 from app.utils.db import relationship
 
 from .database import Base
-from .types import AwareDateTime
+from .types import Enum, AwareDateTime
+from .enums import CommandAccessLevel
 
 
 # ==============================================================================
@@ -45,6 +46,8 @@ class User(Base):
     channel: Mapped["Channel"] = relationship("Channel", uselist=False, back_populates="owner")
     viewers: Mapped[list["Viewer"]] = relationship("Viewer", uselist=True, back_populates="user")
 
+    command_cooldowns: Mapped[list["ViewerCommandCooldown"]] = relationship("ViewerCommandCooldown", uselist=True, back_populates="user")
+
 
 # ==============================================================================
 # Channel Models
@@ -68,7 +71,7 @@ class Channel(Base):
     owner: Mapped[User | None] = relationship("User", uselist=False, back_populates="channel")
     viewers: Mapped[list["Viewer"]] = relationship("Viewer", uselist=True, back_populates="channel")
     access_token: Mapped["ChannelAccessToken"]  = relationship("ChannelAccessToken", uselist=False, back_populates="channel")
-    command_cooldowns: Mapped[list["ChannelCommandCooldown"]] = relationship("ChannelCommandCooldown", uselist=True, back_populates="channel")
+    commands: Mapped[list["Command"]] = relationship("Command", uselist=True, back_populates="channel")
 
     @hybrid_property
     def is_live(self) -> bool: # pyright: ignore[reportRedeclaration]
@@ -155,24 +158,6 @@ class ChannelAccessToken(Base):
         from app.security import decrypt
         return decrypt(self.refresh_token_encrypted)
 
-class ChannelCommandCooldown(Base):
-    """
-    Channel command cooldowns.
-    """
-    __tablename__ = "channel_command_cooldowns"
-    __table_args__ = (
-        UniqueConstraint("channel_id", "command"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
-    channel_id: Mapped[int] = mapped_column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), index=True, nullable=False)
-    command: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
-
-    used_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    cooldown_at: Mapped[datetime] = mapped_column(AwareDateTime, nullable=False)
-
-    channel: Mapped[Channel] = relationship("Channel", uselist=False, back_populates="command_cooldowns")
-
 
 # ==============================================================================
 # Viewer Models
@@ -183,6 +168,7 @@ class Viewer(Base):
     """
     __tablename__ = "viewers"
     __table_args__ = (
+        Index("ix_viewers_user_id_channel_id", "user_id", "channel_id"),
         UniqueConstraint("user_id", "channel_id"),
     )
 
@@ -233,7 +219,83 @@ class Viewer(Base):
 
     user: Mapped[User] = relationship("User", uselist=False, back_populates="viewers")
     channel: Mapped[Channel] = relationship("Channel", uselist=False, back_populates="viewers")
-    command_cooldowns: Mapped[list["ViewerCommandCooldown"]] = relationship("ViewerCommandCooldown", uselist=True, back_populates="viewer")
+
+
+# ==============================================================================
+# Command Models
+
+class Command(Base):
+    """
+    Channel command.
+    """
+    __tablename__ = "commands"
+    __table_args__ = (
+        Index("ix_commands_channel_id_key", "channel_id", "key"),
+        UniqueConstraint("channel_id", "key"),
+
+        CheckConstraint("point_cost >= 0"),
+        CheckConstraint("channel_cooldown >= 0"),
+        CheckConstraint("viewer_cooldown >= 0"),
+        CheckConstraint("channel_limit >= 0"),
+        CheckConstraint("viewer_limit >= 0"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
+    channel_id: Mapped[int] = mapped_column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), index=True, nullable=False)
+
+    key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+
+    default_alias_id: Mapped[int] = mapped_column(Integer, ForeignKey("command_aliases.id", ondelete="SET NULL"), nullable=True)
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    min_access_level: Mapped[CommandAccessLevel] = mapped_column(Enum(CommandAccessLevel), default=CommandAccessLevel.viewer.name, nullable=False)
+
+    point_cost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    channel_cooldown: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    channel_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    viewer_cooldown: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    viewer_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    channel: Mapped[Channel] = relationship("Channel", uselist=False, back_populates="commands")
+    aliases: Mapped[list["CommandAlias"]] = relationship("CommandAlias", uselist=True, back_populates="command", foreign_keys="CommandAlias.command_id")
+    default_alias: Mapped["CommandAlias"] = relationship("CommandAlias", uselist=False, post_update=True, lazy="joined", foreign_keys=[default_alias_id])
+    channel_cooldowns: Mapped[list["ChannelCommandCooldown"]] = relationship("ChannelCommandCooldown", uselist=True, back_populates="command")
+    viewer_cooldowns: Mapped[list["ViewerCommandCooldown"]] = relationship("ViewerCommandCooldown", uselist=True, back_populates="command")
+
+class CommandAlias(Base):
+    """
+    Channel Command Alias.
+    """
+    __tablename__ = "command_aliases"
+    __table_args__ = (
+        Index("ix_command_aliases_command_id_name", "command_id", "name"),
+        UniqueConstraint("command_id", "name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
+    command_id: Mapped[int] = mapped_column(Integer, ForeignKey("commands.id", ondelete="CASCADE"), index=True, nullable=False)
+
+    name: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+
+    command: Mapped[Command] = relationship("Command", uselist=False, back_populates="aliases", foreign_keys=[command_id])
+
+class ChannelCommandCooldown(Base):
+    """
+    Channel command cooldowns.
+    """
+    __tablename__ = "channel_command_cooldowns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
+    command_id: Mapped[int] = mapped_column(Integer, ForeignKey("commands.id", ondelete="CASCADE"), unique=True, index=True, nullable=False)
+
+    used_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    count_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    count_current: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    command: Mapped[Command] = relationship("Command", uselist=False, back_populates="channel_cooldowns")
 
 class ViewerCommandCooldown(Base):
     """
@@ -241,14 +303,17 @@ class ViewerCommandCooldown(Base):
     """
     __tablename__ = "viewer_command_cooldowns"
     __table_args__ = (
-        UniqueConstraint("viewer_id", "command"),
+        Index("ix_viewer_command_cooldowns_command_id_user_id", "command_id", "user_id"),
+        UniqueConstraint("command_id", "user_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
-    viewer_id: Mapped[int] = mapped_column(Integer, ForeignKey("viewers.id", ondelete="CASCADE"), index=True, nullable=False)
-    command: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    command_id: Mapped[int] = mapped_column(Integer, ForeignKey("commands.id", ondelete="CASCADE"), index=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
 
     used_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    cooldown_at: Mapped[datetime] = mapped_column(AwareDateTime, nullable=False)
+    count_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    count_current: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    viewer: Mapped[Viewer] = relationship("Viewer", uselist=False, back_populates="command_cooldowns")
+    command: Mapped[Command] = relationship("Command", uselist=False, back_populates="viewer_cooldowns")
+    user: Mapped[User] = relationship("User", uselist=False, back_populates="command_cooldowns")

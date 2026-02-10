@@ -11,6 +11,7 @@ from app.settings import getenv_list
 from app.connector import ConnectorMessage, ConnectorManager, WebSocketConnector
 from app.connectors.warudo import QUIRKY_ANIMALS_MAP
 from app.connectors.buttplug import VibeGroup, VibeFrame, parse_vibes
+from app import commands
 
 from app.db.database import get_async_db
 
@@ -297,7 +298,39 @@ class JoystickTVConnector(WebSocketConnector):
 
             await jstv_dbstate.on_new_chat(db, channel, user, viewer)
 
-            if bot_command_lower in ["points", "p"]:
+            cmd = commands.get_by_alias(bot_command_lower)
+            if cmd is not None:
+                await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
+
+                settings = cmd.settings
+
+                ctx = commands.CommandContext(
+                    connector=self,
+                    channel=channel,
+                    user=user,
+                    viewer=viewer,
+                    settings=settings,
+                    event=message,
+                    fields={},
+                )
+
+                if settings.point_cost > viewer.points:
+                    await self.send_chat_reply(
+                        message,
+                        f"You do not have enough points to use the {bot_command_lower} command",
+                        whisper=True,
+                    )
+                    return
+
+                try:
+                    if not await cmd.handle(ctx):
+                        return
+                except Exception as e:
+                    self.logger.exception("Failed to handle command %r: %s", cmd.key, e)
+
+                viewer.points -= max(0, settings.point_cost)
+
+            elif bot_command_lower in ["points", "p"]:
                 await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
                 await self.send_chat_reply(
                     message,

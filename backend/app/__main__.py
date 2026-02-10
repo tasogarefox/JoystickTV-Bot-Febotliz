@@ -1,7 +1,7 @@
 import asyncio
 import uvicorn
 
-from app import settings
+from app import settings, commands
 from app.log import setup_logging
 from app.db.database import async_setup_database
 
@@ -13,6 +13,8 @@ async def async_main():
     setup_logging()
 
     await async_setup_database()
+
+    commands.initialize()
 
     config = uvicorn.Config(
         app="app.server:app",

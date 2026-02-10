@@ -1,11 +1,22 @@
+from typing import Any
 from datetime import datetime, timezone
 import enum
 
-from sqlalchemy import TypeDecorator, Integer, DateTime
+from sqlalchemy import TypeDecorator, Integer, DateTime, Enum as SAEnum
 
 
 # ==============================================================================
 # Types
+
+class Enum(SAEnum):
+    """
+    SQLAlchemy Enum with safe defaults:
+    stores values as strings and validates assignments.
+    """
+    def __init__(self, *enums: type[enum.Enum], **kwargs: Any):
+        kwargs.setdefault("native_enum", False)
+        kwargs.setdefault("validate_strings", True)
+        super().__init__(*enums, **kwargs)
 
 class IntEnum(TypeDecorator):
     """
