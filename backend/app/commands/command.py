@@ -2,6 +2,7 @@ from typing import ClassVar, Generator
 from dataclasses import dataclass
 
 from app.connector import BaseConnector
+from app.events import jstv as evjstv
 from app.db.models import Channel, User, Viewer
 from app.db.enums import CommandAccessLevel
 
@@ -18,7 +19,7 @@ __all__ = [
 @dataclass(frozen=True, slots=True)
 class CommandContext:
     connector: BaseConnector
-    event: dict
+    evmsg: evjstv.JSTVMessage
 
     channel: Channel
     user: User

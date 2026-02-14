@@ -1,5 +1,6 @@
-from typing import Optional, Any, Awaitable, Coroutine, Callable, Iterable
+from typing import Optional, Any, Coroutine, Iterable
 import asyncio
+import logging
 import json
 import random
 import websockets
@@ -14,6 +15,8 @@ from app.connectors.buttplug import VibeGroup, VibeFrame, parse_vibes
 from app import commands
 
 from app.db.database import get_async_db
+
+from app.events import jstv as evjstv
 
 from app.jstv import jstv_db
 from app.jstv.jstv_web import WS_HOST, ACCESS_TOKEN
@@ -47,26 +50,6 @@ class JoystickTVConnector(WebSocketConnector):
     def __init__(self, manager: ConnectorManager, name: Optional[str] = None, url: Optional[str] = None):
         super().__init__(manager, name or NAME, url or URL)
         self.live_channels = {}
-
-    async def __call_with_message_metadata(
-        self,
-        _callback: Callable[[dict[Any, Any], dict[Any, Any]], Awaitable],
-        _message: dict[Any, Any],
-    ) -> bool:
-        metadata_str: str = _message.get("metadata") or ""
-
-        try:
-            metadata = json.loads(metadata_str)
-        except json.JSONDecodeError:
-            self.logger.error("Invalid JSON: %s", metadata_str)
-            return False
-
-        if not isinstance(metadata, dict):
-            self.logger.error("JSON not a dict: %s", metadata_str)
-            return False
-
-        await _callback(_message, metadata)
-        return True
 
     def _create_connection(self) -> websockets.connect:
         return websockets.connect(self.url, subprotocols=[SUBPROTOCOL_ACTIONABLE])
@@ -161,85 +144,86 @@ class JoystickTVConnector(WebSocketConnector):
             await jstv_dbstate.on_server_message(db)
             await db.commit()
 
-        if 'type' in data:
-            if data["type"] == "reject_subscription":
-                self.logger.error("Subscription rejected")
+        try:
+            event = evjstv.JSTVEvent.parse(data)
+        except evjstv.JSTVParseError:
+            return  # NOTE: Parser handles logging
+
+        iscontrol = isinstance(event, evjstv.JSTVControlEvent)
+        isdebug = self.logger.getEffectiveLevel() <= logging.DEBUG
+
+        if isdebug:  # Log full event if debugging
+            self.logger.debug("Received: %r", event)
+
+        if iscontrol:
+            if isinstance(event, evjstv.JSTVPingEvent):
+                return
+
+        if not isdebug:  # Log summary event if not debugging
+            self.logger.info("Received: %s", event)
+
+        if iscontrol:
+            if isinstance(event, evjstv.JSTVRejectSubscriptionEvent):
                 self._connected = False
-                return
 
-            elif data["type"] == "confirm_subscription":
-                self.logger.info(f"Subscription confirmed")
-                return
+            elif isinstance(event, evjstv.JSTVConfirmSubscriptionEvent):
+                self._connected = True
 
-            elif data["type"] == "welcome":
-                self.logger.info("Received welcome")
-                return
+            # elif isinstance(event, evjstv.JSTVWelcomeEvent):
+            #     ...
 
-            elif data["type"] == "ping":
-                self.logger.debug("Received ping")
-                return
-
-        self.logger.info("Received: %s", data)
+            return
 
         if not self._connected:
             return
 
-        if "message" in data:
-            message = data["message"]
-
-            if message["type"] == "Started":
-                await self.on_stream_started(message)
-
-            elif message["type"] == "Ended":
-                await self.on_stream_ended(message)
-
-            elif message["type"] == "StreamResuming":
-                await self.on_stream_resuming(message)
-
-            elif message["type"] == "new_message":
-                await self.on_new_chat(message)
-
-            elif message["type"] == "enter_stream":
-                await self.on_enter_stream(message)
-
-            elif message["type"] == "leave_stream":
-                await self.on_leave_stream(message)
-
-            elif message["type"] == "Followed":
-                await self.__call_with_message_metadata(
-                    self.on_followed, message)
-
-            elif message["type"] == "Subscribed":
-                await self.__call_with_message_metadata(
-                    self.on_subscribed, message)
-
-            elif message["type"] == "Tipped":
-                await self.__call_with_message_metadata(
-                    self.on_tipped, message)
-
-            elif message["type"] == "TipGoalIncreased":
-                await self.__call_with_message_metadata(
-                    self.on_tip_goal_increased, message)
-
-            elif message["type"] == "MilestoneCompleted":
-                await self.__call_with_message_metadata(
-                    self.on_milestone_completed, message)
-
-            elif message["type"] == "TipGoalMet":
-                await self.__call_with_message_metadata(
-                    self.on_tip_goal_met, message)
-
-            elif message["type"] == "StreamDroppedIn":
-                await self.__call_with_message_metadata(
-                    self.on_stream_dropped_in, message)
-
-    async def on_stream_started(self, message: dict[Any, Any]):
-        """Handle a channel transitioning to live."""
-        channel_id: str | None = message.get("channelId")
-        if not channel_id:
+        if not isinstance(event, evjstv.JSTVMessageEvent):
             return
 
-        self.logger.info("Stream started: %s", channel_id)
+        evmsg: evjstv.JSTVMessage = event.message
+
+        if isinstance(evmsg, evjstv.JSTVSteamStarted):
+            await self.on_stream_started(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVStreamEnded):
+            await self.on_stream_ended(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVStreamResuming):
+            await self.on_stream_resuming(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVNewChatMessage):
+            await self.on_new_chat(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVUserEnteredStream):
+            await self.on_enter_stream(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVUserLeftStream):
+            await self.on_leave_stream(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVFollowed):
+            await self.on_followed(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVSubscribed):
+            await self.on_subscribed(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVTipped):
+            await self.on_tipped(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVTipGoalIncreased):
+            await self.on_tip_goal_increased(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVMilestoneCompleted):
+            await self.on_milestone_completed(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVTipGoalMet):
+            await self.on_tip_goal_met(evmsg)
+
+        elif isinstance(evmsg, evjstv.JSTVStreamDroppedIn):
+            await self.on_stream_dropped_in(evmsg)
+
+    async def on_stream_started(self, evmsg: evjstv.JSTVSteamStarted):
+        """Handle a channel transitioning to live."""
+        channel_id = evmsg.channelId
 
         # Ensure live channel cache exists
         live_channel = self.live_channels.get(channel_id)
@@ -250,13 +234,9 @@ class JoystickTVConnector(WebSocketConnector):
             await jstv_dbstate.on_stream_started(db, channel_id)
             await db.commit()
 
-    async def on_stream_resuming(self, message: dict[Any, Any]):
+    async def on_stream_resuming(self, evmsg: evjstv.JSTVStreamResuming):
         """Handle a channel resuming its stream after a short disconnect."""
-        channel_id: str | None = message.get("channelId")
-        if not channel_id:
-            return
-
-        self.logger.info("Stream resuming: %s", channel_id)
+        channel_id = evmsg.channelId
 
         # Ensure live channel cache exists
         live_channel = self.live_channels.get(channel_id)
@@ -267,13 +247,9 @@ class JoystickTVConnector(WebSocketConnector):
             await jstv_dbstate.on_stream_resuming(db, channel_id)
             await db.commit()
 
-    async def on_stream_ended(self, message: dict[Any, Any]):
+    async def on_stream_ended(self, evmsg: evjstv.JSTVStreamEnded):
         """Handle a channel transitioning to offline."""
-        channel_id: str | None = message.get("channelId")
-        if not channel_id:
-            return
-
-        self.logger.info("Stream ended: %s", channel_id)
+        channel_id = evmsg.channelId
 
         # Remove channel from in-memory live cache
         self.live_channels.pop(channel_id, None)
@@ -282,14 +258,12 @@ class JoystickTVConnector(WebSocketConnector):
             await jstv_dbstate.on_stream_ended(db, channel_id)
             await db.commit()
 
-    async def on_new_chat(self, message: dict[Any, Any]):
-        channel_id: str | None = message.get("channelId")
-        username: str | None = message.get("author", {}).get("username")
-        if not channel_id or not username:
-            return
+    async def on_new_chat(self, evmsg: evjstv.JSTVNewChatMessage):
+        channel_id = evmsg.channelId
+        username = evmsg.author.username
 
-        text_lower: str = (message.get("text") or "").lower()
-        bot_command_lower: str = (message.get("botCommand") or "").lower()
+        text_lower = evmsg.text.lower()
+        bot_command_lower = (evmsg.botCommand or "").lower()
 
         async with get_async_db() as db:
             channel = await jstv_db.get_or_create_channel(db, channel_id)
@@ -310,13 +284,13 @@ class JoystickTVConnector(WebSocketConnector):
                     user=user,
                     viewer=viewer,
                     settings=settings,
-                    event=message,
+                    evmsg=evmsg,
                     fields={},
                 )
 
                 if settings.point_cost > viewer.points:
                     await self.send_chat_reply(
-                        message,
+                        evmsg,
                         f"You do not have enough points to use the {bot_command_lower} command",
                         whisper=True,
                     )
@@ -333,16 +307,15 @@ class JoystickTVConnector(WebSocketConnector):
             elif bot_command_lower in ["points", "p"]:
                 await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
                 await self.send_chat_reply(
-                    message,
+                    evmsg,
                     f"has {int(viewer.points)} points",
                     mention=True,
                 )
 
             elif bot_command_lower == "test_tip":
-                slug: str = message["author"]["slug"]
-                if slug != message["streamer"]["slug"]:
+                if not evmsg.sameAuthorAsStreamer:
                     await self.send_chat_reply(
-                        message,
+                        evmsg,
                         f"You do not have the necessary permissions to use the {bot_command_lower} command",
                         mention=True,
                     )
@@ -350,46 +323,53 @@ class JoystickTVConnector(WebSocketConnector):
 
                 amount = 0
 
-                arg: str | None = message.get("botCommandArg")
-                if arg:
+                if evmsg.botCommandArg:
                     try:
-                        amount = int(arg)
+                        amount = int(evmsg.botCommandArg)
                     except ValueError:
                         pass
 
-                metadata = {
-                    "who": "TEST",
-                    "what": "Tipped",
-                    "how_much": amount,
-                    "tip_menu_item": None,
-                }
+                tipped_evmsg = evjstv.JSTVTipped(
+                    event="StreamEvent",
+                    type="Tipped",
+                    id=evmsg.id,
+                    text=evmsg.text,
+                    createdAt=evmsg.createdAt,
+                    channelId=channel_id,
+                    metadata=evjstv.JSTVTipped.Metadata(
+                        who="TEST",
+                        what="Tipped",
+                        how_much=amount,
+                        tip_menu_item=None,
+                    ),
+                )
 
                 await asyncio.gather(
-                    self.send_chat_reply(message, f"Sending test tip of {amount} tokens"),
-                    self.on_tipped(message, metadata),
+                    self.send_chat_reply(evmsg, f"Sending test tip of {amount} tokens"),
+                    self.on_tipped(tipped_evmsg),
                 )
 
             elif any(x == bot_command_lower for x in ["pet", "pets", "pat", "pats"]) or any(x in text_lower for x in [":felizpet:"]):
                 await asyncio.gather(
-                    self.send_chat_reply(message, f"Pet that fluff-ball <3"),
+                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
                     self.send_warudo("HeadPets"),
                 )
 
             elif any(x == bot_command_lower for x in ["pet1", "pets1", "pat1", "pats1"]):
                 await asyncio.gather(
-                    self.send_chat_reply(message, f"Pet that fluff-ball <3"),
+                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
                     self.send_warudo("HeadPets1"),
                 )
 
             elif any(x == bot_command_lower for x in ["pet2", "pets2", "pat2", "pats2"]):
                 await asyncio.gather(
-                    self.send_chat_reply(message, f"Pet that fluff-ball <3"),
+                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
                     self.send_warudo("HeadPets2"),
                 )
 
             elif any(x == bot_command_lower for x in ["pet3", "pets3", "pat3", "pats3"]):
                 await asyncio.gather(
-                    self.send_chat_reply(message, f"Pet that fluff-ball <3"),
+                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
                     self.send_warudo("HeadPets3"),
                 )
 
@@ -485,7 +465,7 @@ class JoystickTVConnector(WebSocketConnector):
 
                 await asyncio.gather(
                     self.send_chat_reply(
-                        message,
+                        evmsg,
                         f"has been plushified into a {animal}",
                         mention=True,
                     ),
@@ -493,38 +473,38 @@ class JoystickTVConnector(WebSocketConnector):
                 )
 
             elif any(x == bot_command_lower for x in ["viewersign", "sign", "showsign"]):
-                text: str | None = message.get("botCommandArg")
-                if not text:
+                if not evmsg.botCommandArg:
                     await self.send_chat_reply(
-                        message,
+                        evmsg,
                         f"Usage: !{bot_command_lower} <TEXT>",
                         mention=True,
                     )
                     return
 
-                await self.send_warudo("ViewerSign", text)
+                await self.send_warudo("ViewerSign", evmsg.botCommandArg)
 
             elif bot_command_lower == "clip":
                 await asyncio.gather(
                     self.talkto("OBS", "clip", None),
-                    self.send_chat_reply(message, f"Creating a clip of the last 2 minutes"),
+                    self.send_chat_reply(evmsg, f"Creating a clip of the last 2 minutes"),
                 )
 
             elif bot_command_lower in ["vibe_disable", "vibe_delay"]:
-                slug: str = message["author"]["slug"]
-                if slug != message["streamer"]["slug"]:
+                if not evmsg.sameAuthorAsStreamer:
                     await self.send_chat_reply(
-                        message,
+                        evmsg,
                         f"You do not have the necessary permissions to use the {bot_command_lower} command",
                         mention=True,
                     )
                     return
 
                 try:
-                    delay = float(message["botCommandArg"])
-                except (KeyError, TypeError, ValueError):
+                    if not evmsg.botCommandArg:
+                        raise ValueError
+                    delay = float(evmsg.botCommandArg)
+                except ValueError:
                     await self.send_chat_reply(
-                        message,
+                        evmsg,
                         f"Usage: !{bot_command_lower} [SECONDS]",
                         mention=True,
                     )
@@ -534,10 +514,9 @@ class JoystickTVConnector(WebSocketConnector):
                 return
 
             elif bot_command_lower in ["vibe_stop", "vibe_clear"]:
-                slug: str = message["author"]["slug"]
-                if slug != message["streamer"]["slug"]:
+                if not evmsg.sameAuthorAsStreamer:
                     await self.send_chat_reply(
-                        message,
+                        evmsg,
                         f"You do not have the necessary permissions to use the {bot_command_lower} command",
                         mention=True,
                     )
@@ -547,16 +526,15 @@ class JoystickTVConnector(WebSocketConnector):
                 return
 
             elif bot_command_lower == "vibe":
-                # slug: str = message["author"]["slug"]
-                # if slug != message["streamer"]["slug"] and slug.lower() not in VIP_USERS:
-                #     await self.send_chat_reply(
-                #         message,
-                #         f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                #         mention=True,
-                #     )
-                #     return
+                if not evmsg.sameAuthorAsStreamer and evmsg.author.slug.lower() not in VIP_USERS:
+                    await self.send_chat_reply(
+                        evmsg,
+                        f"You do not have the necessary permissions to use the {bot_command_lower} command",
+                        mention=True,
+                    )
+                    return
 
-                vibestr: str | None = message.get("botCommandArg")
+                vibestr = evmsg.botCommandArg
                 try:
                     if not vibestr:
                         raise ValueError
@@ -566,7 +544,7 @@ class JoystickTVConnector(WebSocketConnector):
                 except ValueError as e:
                     # Show the usage
                     errmsg = str(e) if isinstance(e, Exception) else ""
-                    await self.send_chat_reply(message, errmsg + (
+                    await self.send_chat_reply(evmsg, errmsg + (
                         # f"\nUsage: !{bot_command_lower} [AMOUNT%] [TIMEs] [DEVICE] ..."
                         f"\nExamples: !{bot_command_lower} 20% 5s"
                         f"; !{bot_command_lower} 5s 10% 50% 100%"
@@ -597,44 +575,39 @@ class JoystickTVConnector(WebSocketConnector):
                 await self.send_warudo("Dildo")
 
             elif bot_command_lower:
-                args: list[str] = str(message.get("botCommandArg") or "").split(" ")
+                args = evmsg.splitBotCommandArg()
                 args.insert(0, bot_command_lower)
                 await self.send_warudo("OnChatCmd", args)
 
-            await db.commit()  # NOTE: must commit after any usage of db
+            await db.commit()
 
-    async def on_enter_stream(self, message: dict[Any, Any]):
+    async def on_enter_stream(self, evmsg: evjstv.JSTVUserEnteredStream):
         """Handle a viewer joining a channel."""
-        channel_id: str | None = message.get("channelId")
-        username: str | None = message.get("text")
-        if not channel_id or not username:
-            return
+        channel_id = evmsg.channelId
+        username = evmsg.username
 
         async with get_async_db() as db:
             await jstv_dbstate.on_enter_stream(db, channel_id, username, None)
-            await db.commit()  # NOTE: must commit after any usage of db
+            await db.commit()
 
-    async def on_leave_stream(self, message: dict[Any, Any]):
+    async def on_leave_stream(self, evmsg: evjstv.JSTVUserLeftStream):
         """Handle a viewer leaving a channel."""
-        channel_id: str | None = message.get("channelId")
-        username: str | None = message.get("text")
-        if not channel_id or not username:
-            return
+        channel_id = evmsg.channelId
+        username = evmsg.username
 
         async with get_async_db() as db:
             await jstv_dbstate.on_leave_stream(db, channel_id, username, None)
-            await db.commit()  # NOTE: must commit after any usage of db
+            await db.commit()
 
-    async def on_followed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        channel_id: str | None = message.get("channelId")
-        username: str | None = metadata.get("who")
-        if not channel_id or not username:
-            return
+    async def on_followed(self, evmsg: evjstv.JSTVFollowed):
+        metadata = evmsg.metadata
+        channel_id = evmsg.channelId
+        username = metadata.who
 
         async with get_async_db() as db:
             points = await jstv_dbstate.on_followed(db, channel_id, username, None)
             if points > 0:
-                # tasks.append(self.send_chat_reply(message, (
+                # tasks.append(self.send_chat_reply(evmsg, (
                 #     f"Thanks for following, {username}!"
                 #     f" You've been rewarded {points} points."
                 # ), whisper=True))
@@ -642,18 +615,17 @@ class JoystickTVConnector(WebSocketConnector):
 
             await self.send_warudo("OnFollowed")
 
-            await db.commit()  # NOTE: must commit after any usage of db
+            await db.commit()
 
-    async def on_subscribed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        channel_id: str | None = message.get("channelId")
-        username: str | None = metadata.get("who")
-        if not channel_id or not username:
-            return
+    async def on_subscribed(self, evmsg: evjstv.JSTVSubscribed):
+        metadata = evmsg.metadata
+        channel_id = evmsg.channelId
+        username = metadata.who
 
         async with get_async_db() as db:
             points = await jstv_dbstate.on_subscribed(db, channel_id, username, None)
             if points > 0:
-                # tasks.append(self.send_chat_reply(message, (
+                # tasks.append(self.send_chat_reply(evmsg, (
                 #     f"Thanks for subscribing, {username}!"
                 #     f" You've been rewarded {points} points."
                 # ), whisper=True))
@@ -661,24 +633,22 @@ class JoystickTVConnector(WebSocketConnector):
 
             await self.send_warudo("OnSubscribed", username)
 
-            await db.commit()  # NOTE: must commit after any usage of db
+            await db.commit()
 
-    async def on_tipped(self, message: dict[Any, Any], metadata: dict[Any, Any]):
+    async def on_tipped(self, evmsg: evjstv.JSTVTipped):
         OVERRIDE_VIBES = True
 
-        channel_id: str | None = message.get("channelId")
-        username: str | None = metadata.get("who")
-        if not channel_id or not username:
-            return
-
-        amount: int = metadata.get("how_much") or 0
+        metadata = evmsg.metadata
+        channel_id = evmsg.channelId
+        username = metadata.who
+        amount = metadata.how_much
 
         async with get_async_db() as db:
             tasks: list[Coroutine[Any, Any, None]] = []
 
             points = await jstv_dbstate.on_tipped(db, channel_id, username, None, amount)
             if points > 0:
-                # tasks.append(self.send_chat_reply(message, (
+                # tasks.append(self.send_chat_reply(evmsg, (
                 #     f"Thanks for tipping, {username}!"
                 #     f" You've been rewarded {points} points."
                 # ), whisper=True))
@@ -726,48 +696,50 @@ class JoystickTVConnector(WebSocketConnector):
 
             tasks.append(self.send_warudo("OnTipped", amount))
 
-            tip_menu_item: str = str(metadata.get("tip_menu_item") or "")
+            tip_menu_item: str = str(metadata.tip_menu_item or "")
             if tip_menu_item:
                 tasks.append(self.send_warudo("OnRedeemed", tip_menu_item))
 
             await asyncio.gather(*tasks)
             await db.commit()
 
-    async def on_tip_goal_increased(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        step = 100
-        current: int = metadata.get("current") or 0
-        previous: int = metadata.get("previous") or 0
+    async def on_tip_goal_increased(self, evmsg: evjstv.JSTVTipGoalIncreased):
+        STEP = 100
+
+        metadata = evmsg.metadata
+        current = metadata.current
+        previous = metadata.previous
 
         tasks = [
             self.send_warudo("OnTipGoalIncreased", [current, previous]),
         ]
 
-        steps_increased = current // step - previous // step
+        steps_increased = current // STEP - previous // STEP
         if steps_increased > 0:
             tasks.append(self.send_warudo("OnTipGoalPeriodicStep", steps_increased))
 
         await asyncio.gather(*tasks)
 
-    async def on_milestone_completed(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        amount: int = metadata.get("amount") or 0
+    async def on_milestone_completed(self, evmsg: evjstv.JSTVMilestoneCompleted):
+        metadata = evmsg.metadata
+        amount: int = metadata.amount
         await self.send_warudo("OnMilestoneCompleted", amount)
 
-    async def on_tip_goal_met(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        amount: int = metadata.get("amount") or 0
+    async def on_tip_goal_met(self, evmsg: evjstv.JSTVTipGoalMet):
+        metadata = evmsg.metadata
+        amount: int = metadata.amount
         await self.send_warudo("OnTipGoalMet", amount)
 
-    async def on_stream_dropped_in(self, message: dict[Any, Any], metadata: dict[Any, Any]):
-        channel_id: str | None = message.get("channelId")
-        username: str | None = metadata.get("who")
-        if not channel_id or not username:
-            return
-
-        number_of_viewers: int = metadata.get("number_of_viewers") or 0
+    async def on_stream_dropped_in(self, evmsg: evjstv.JSTVStreamDroppedIn):
+        metadata = evmsg.metadata
+        channel_id = evmsg.channelId
+        username = metadata.who
+        number_of_viewers = metadata.number_of_viewers
 
         async with get_async_db() as db:
             points = await jstv_dbstate.on_raided(db, channel_id, username, None, number_of_viewers)
             if points > 0:
-                # tasks.append(self.send_chat_reply(message, (
+                # tasks.append(self.send_chat_reply(evmsg, (
                 #     f"Thanks for the drop-in, {username}!"
                 #     f" You've been rewarded {points} points."
                 # ), whisper=True))
@@ -826,17 +798,17 @@ class JoystickTVConnector(WebSocketConnector):
 
     async def send_chat_reply(
         self,
-        ctxmsg: dict[Any, Any],
+        evmsg: evjstv.JSTVBaseChatMessage,
         text: str,
         *,
         mention: bool = False,
         whisper: bool = False,
     ):
         await self.send_chat(
-            channel_id=ctxmsg["channelId"],
+            channel_id=evmsg.channelId,
             text=text,
-            mention=ctxmsg["author"]["username"] if mention else None,
-            whisper=ctxmsg["author"]["username"] if whisper else None,
+            mention=evmsg.author.username if mention else None,
+            whisper=evmsg.author.username if whisper else None,
         )
 
     async def send_warudo(self, action: str, data: Any = None):
