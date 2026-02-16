@@ -5,9 +5,9 @@ from app.connectors.joysticktv import JoystickTVConnector
 
 class PointsCommand(Command):
     key = "feliz.points"
+    title = "Points"
     description = "Check your points"
 
-    name = "Points"
     aliases = ("points", "p")
 
     settings = CommandSettings(

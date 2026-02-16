@@ -54,18 +54,17 @@ class Command:
 
     __subclasses: ClassVar[dict[str, type["Command"]]] = {}
     __CHECK_ATTRIBUTES: ClassVar[tuple[str, ...]] = (
-        "key", "description",
-        "name", "aliases",
-        "settings",
+        "key", "title", "description",
+        "aliases", "settings",
     )
     __CHECK_METHODS: ClassVar[tuple[str, ...]] = (
         "handle",
     )
 
     key: ClassVar[str]
+    title: ClassVar[str]
     description: ClassVar[str]
 
-    name: ClassVar[str]
     aliases: ClassVar[tuple[str, ...]]
 
     settings: ClassVar[CommandSettings]
