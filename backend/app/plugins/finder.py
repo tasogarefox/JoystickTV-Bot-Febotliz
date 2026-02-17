@@ -80,8 +80,10 @@ class PluginFinder(MetaPathFinder):
 
     def install(self) -> None:
         """Append plugin finder to sys.meta_path."""
-        if not self.is_installed():
-            sys.meta_path.append(self)
+        if self.is_installed():
+            return
+
+        sys.meta_path.append(self)
 
         # Clear any loaders that might already be in use by the FileFinder
         sys.path_importer_cache.clear()

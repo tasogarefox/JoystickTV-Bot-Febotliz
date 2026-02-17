@@ -1,7 +1,12 @@
 import asyncio
 import uvicorn
 
-from app import settings, commands
+from app import settings
+from app.handlers.jstv import (
+    plugin_finder as jstv_plugin_finder,
+    events as event_handlers,
+    commands as command_handlers,
+)
 from app.log import setup_logging
 from app.db.database import async_setup_database
 
@@ -14,7 +19,9 @@ async def async_main():
 
     await async_setup_database()
 
-    commands.initialize()
+    jstv_plugin_finder.install()
+    event_handlers.initialize()
+    command_handlers.initialize()
 
     config = uvicorn.Config(
         app="app.server:app",

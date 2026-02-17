@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import Field, AliasChoices, field_validator
 
 from .shared import JSTVEvent, LoggedModel, JSTVIdentifier, ParsedJSON
+from .errors import JSTVValidationError
 
 JSTVMessageT = TypeVar(
     "JSTVMessageT",
@@ -92,6 +93,14 @@ class JSTVMessageEvent(JSTVEvent, LoggedModel, Generic[JSTVMessageT]):
     def __str__(self) -> str:
         return f"message: {self.message}"
 
+    @property
+    def actor(self) -> str | None:
+        """
+        Username of the primary user associated with this event, if any.
+
+        Convenience proxy to `self.message.actor`.
+        """
+        return self.message.actor
 
 # ==============================================================================
 # Data Models
@@ -137,13 +146,13 @@ class JSTVMessage(LoggedModel):
         for key in ["event", "type"]:
             value = data.get(key)
             if value is None:
-                raise ValueError(f"Missing field: {key}")
+                raise JSTVValidationError(f"Missing field: {key}")
             discriminator_parts.append(value)
 
         discriminator = ":".join(discriminator_parts)
         subcls = cls.__subclsmap.get(discriminator)
         if subcls is None:
-            raise ValueError(f"Unknown message type: {discriminator}")
+            raise JSTVValidationError(f"Unknown message type: {discriminator}")
 
         return subcls(**data)
 
@@ -160,6 +169,15 @@ class JSTVMessage(LoggedModel):
         if len(text) > maxlen:
             text = text[:maxlen-3] + "..."
         return text
+
+    @property
+    def actor(self) -> str | None:
+        """
+        Username of the primary user associated with this message, if any.
+
+        Subclasses should override this property when applicable.
+        """
+        return None
 
 class JSTVBaseMessageWithId(JSTVMessage):
     id: str
@@ -193,6 +211,10 @@ class JSTVStreamer(JSTVBaseUser):
 class JSTVBaseStreamLivespan(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
+    @property
+    def actor(self) -> str:
+        return self.metadata.who
+
     class Metadata(LoggedModel):
         who: str
 
@@ -213,6 +235,10 @@ class JSTVFollowed(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
+    @property
+    def actor(self) -> str:
+        return self.metadata.who
+
     class Metadata(LoggedModel):
         who: str
         what: Literal["followed"]
@@ -229,6 +255,10 @@ class JSTVSubscribed(JSTVBaseMessageWithId):
     discriminator = "StreamEvent:Subscribed"
 
     metadata: ParsedJSON["Metadata"]
+
+    @property
+    def actor(self) -> str:
+        return self.metadata.who
 
     class Metadata(LoggedModel):
         who: str
@@ -247,6 +277,10 @@ class JSTVTipped(JSTVBaseMessageWithId):
     discriminator = "StreamEvent:Tipped"
 
     metadata: ParsedJSON["Metadata"]
+
+    @property
+    def actor(self) -> str:
+        return self.metadata.who
 
     class Metadata(LoggedModel):
         who: str
@@ -272,6 +306,10 @@ class JSTVTipGoalIncreased(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
+    @property
+    def actor(self) -> str:
+        return self.metadata.by_user
+
     class Metadata(LoggedModel):
         by_user: str
         what: Literal["TipGoalIncreased"]
@@ -293,6 +331,10 @@ class JSTVMilestoneCompleted(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
+    @property
+    def actor(self) -> str:
+        return self.metadata.who
+
     class Metadata(LoggedModel):
         who: str
         what: Literal["MilestoneCompleted"]
@@ -303,6 +345,10 @@ class JSTVTipGoalMet(JSTVBaseMessageWithId):
     discriminator = "StreamEvent:TipGoalMet"
 
     metadata: ParsedJSON["Metadata"]
+
+    @property
+    def actor(self) -> str:
+        return self.metadata.who
 
     class Metadata(LoggedModel):
         who: str
@@ -315,6 +361,10 @@ class JSTVStreamDropin(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
+    @property
+    def actor(self) -> str:
+        return self.metadata.origin
+
     class Metadata(LoggedModel):
         origin: str
         destination: str
@@ -325,6 +375,10 @@ class JSTVStreamDroppedIn(JSTVBaseMessageWithId):
     discriminator = "StreamEvent:StreamDroppedIn"
 
     metadata: ParsedJSON["Metadata"]
+
+    @property
+    def actor(self) -> str:
+        return self.metadata.who
 
     class Metadata(LoggedModel):
         who: str
@@ -353,6 +407,10 @@ class JSTVDeviceDisconnected(JSTVBaseDeviceConnection):
 
 class JSTVBaseUserPresence(JSTVBaseMessageWithId):
     @property
+    def actor(self) -> str:
+        return self.username
+
+    @property
     def username(self) -> str:
         return self.text
 
@@ -379,6 +437,10 @@ class JSTVBaseChatMessage(JSTVBaseMessageWithMessageId):
             f" @{self.shortChannelId}"
             f" {self.author.username}: {self.shortText}"
         )
+
+    @property
+    def actor(self) -> str:
+        return self.author.username
 
     @property
     def sameAuthorAsStreamer(self) -> bool:

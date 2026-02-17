@@ -1,5 +1,6 @@
 from typing import Optional, Any, Coroutine, Iterable
 import asyncio
+# import enum
 import logging
 import json
 import random
@@ -12,7 +13,10 @@ from app.settings import getenv_list
 from app.connector import ConnectorMessage, ConnectorManager, WebSocketConnector
 from app.connectors.warudo import QUIRKY_ANIMALS_MAP
 from app.connectors.buttplug import VibeGroup, VibeFrame, parse_vibes
-from app import commands
+from app.handlers.jstv import (
+    events as event_handlers,
+    commands as command_handlers,
+)
 
 from app.db.database import get_async_db
 
@@ -36,6 +40,15 @@ URL = f"{WS_HOST}?token={ACCESS_TOKEN}"
 SUBPROTOCOL_ACTIONABLE = websockets.Subprotocol("actioncable-v1-json")
 
 VIP_USERS = getenv_list("JOYSTICKTV_VIP_USERS")
+
+
+# ==============================================================================
+# Enums
+
+# class ReplyMode(enum.Enum):
+#     CHAT = enum.auto()
+#     MENTION = enum.auto()
+#     WHISPER = enum.auto()
 
 
 # ==============================================================================
@@ -67,7 +80,7 @@ class JoystickTVConnector(WebSocketConnector):
             if mention:
                 text = f"@{mention} {text}"
 
-            for line in msg.data["text"].split("\n"):
+            for line in text.split("\n"):
                 line = line.rstrip()
                 if not line:
                     continue
@@ -177,10 +190,10 @@ class JoystickTVConnector(WebSocketConnector):
         if not self._connected:
             return
 
-        if not isinstance(event, evjstv.JSTVMessageEvent):
+        if not evjstv.evmsgisinstance(event, evjstv.JSTVMessage):
             return
 
-        evmsg: evjstv.JSTVMessage = event.message
+        evmsg = event.message
 
         if isinstance(evmsg, evjstv.JSTVSteamStarted):
             await self.on_stream_started(evmsg)
@@ -220,6 +233,36 @@ class JoystickTVConnector(WebSocketConnector):
 
         elif isinstance(evmsg, evjstv.JSTVStreamDroppedIn):
             await self.on_stream_dropped_in(evmsg)
+
+        async with get_async_db() as db:
+            channel_id = evmsg.channelId
+            username = evmsg.actor
+
+            channel = await jstv_db.get_or_create_channel(db, channel_id)
+            user = await jstv_db.get_or_create_user(db, username) if username else None
+            viewer = await jstv_db.get_or_create_viewer(db, channel, user) if user else None
+
+            for handler in event_handlers.iter_by_type(type(evmsg)):
+                settings = handler.settings
+
+                ctx = event_handlers.JSTVEventHandlerContext(
+                    settings=settings,
+                    connector=self,
+                    message=evmsg,
+                    channel=channel,
+                    user=user,
+                    viewer=viewer,
+                )
+
+                self.logger.info("Invoking event handler %r", handler.key)
+
+                try:
+                    if not await handler.handle(ctx):
+                        return
+                except Exception as e:
+                    self.logger.exception("Failed to handle command %r: %s", handler.key, e)
+
+            await db.commit()
 
     async def on_stream_started(self, evmsg: evjstv.JSTVSteamStarted):
         """Handle a channel transitioning to live."""
@@ -272,20 +315,19 @@ class JoystickTVConnector(WebSocketConnector):
 
             await jstv_dbstate.on_new_chat(db, channel, user, viewer)
 
-            cmd = commands.get_by_alias(bot_command_lower)
+            cmd = command_handlers.get_by_alias(bot_command_lower)
             if cmd is not None:
                 await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
 
                 settings = cmd.settings
 
-                ctx = commands.CommandContext(
+                ctx = command_handlers.JSTVCommandContext(
+                    settings=settings,
                     connector=self,
+                    message=evmsg,
                     channel=channel,
                     user=user,
                     viewer=viewer,
-                    settings=settings,
-                    evmsg=evmsg,
-                    fields={},
                 )
 
                 if settings.point_cost > viewer.points:
@@ -295,6 +337,8 @@ class JoystickTVConnector(WebSocketConnector):
                         whisper=True,
                     )
                     return
+
+                self.logger.info("Invoking command handler %r", cmd.key)
 
                 try:
                     if not await cmd.handle(ctx):
