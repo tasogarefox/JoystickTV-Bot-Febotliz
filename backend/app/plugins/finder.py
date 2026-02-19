@@ -228,10 +228,8 @@ class PluginFinder(MetaPathFinder):
         if info.ispkg:
             return ModuleSpec(fullname, None, is_package=True)
 
-        file = info.file
-        loader = PluginLoader(fullname, file)
+        loader = PluginLoader(fullname, info.source)
 
-        spec = ModuleSpec(fullname, loader, origin=file)
-        spec.submodule_search_locations = []
+        spec = ModuleSpec(fullname, loader, origin=str(info.source))
         spec.has_location = True
         return spec

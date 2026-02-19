@@ -20,7 +20,9 @@ logger = logging.getLogger(__package__ or __name__)
 # Interface
 
 get = HANDLERS.get
-get_by_alias = HANDLERS_BY_ALIAS.get
+
+def get_by_alias(alias: str) -> type[JSTVCommand[Any]] | None:
+    return HANDLERS_BY_ALIAS.get(alias.casefold())
 
 def initialize() -> None:
     for plugin in iter_load_sub_plugins("commands"):
@@ -29,9 +31,9 @@ def initialize() -> None:
         try:
             for handler in plugin.__dict__.values():
                 if (
-                    handler is JSTVCommand or
                     not isinstance(handler, type) or
                     not issubclass(handler, JSTVCommand)
+                    or not handler.is_implemented()
                 ):
                     continue
 
@@ -54,6 +56,7 @@ def register(handler: type[JSTVCommand[Any]]) -> None:
     HANDLERS[handler.key] = handler
 
     for alias in handler.aliases:
+        alias = alias.casefold()
         if alias not in HANDLERS_BY_ALIAS:
             HANDLERS_BY_ALIAS[alias] = handler
 

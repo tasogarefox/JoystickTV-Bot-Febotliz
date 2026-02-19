@@ -41,6 +41,8 @@ class JSTVCommandContext(
     JSTVHandlerContext[MessageT, SettingsT],
     Generic[MessageT, SettingsT],
 ):
+    alias: str
+
     channel: "Channel"
     user: "User"
     viewer: "Viewer"
@@ -59,6 +61,6 @@ class JSTVCommand(
 ):
     __slots__ = ()
 
-    msgtype = _JSTVMessageBaseType
+    msgtypes = (_JSTVMessageBaseType,)
 
     aliases: ClassVar[tuple[str, ...]] = reqcls.required_field()

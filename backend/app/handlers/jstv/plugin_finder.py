@@ -33,7 +33,7 @@ def iter_load_sub_plugins(
     plugin_package: str,
     filter: Callable[[str, bool], bool] = default_plugin_filter,
 ) -> Generator[ModuleType, None, None]:
-    for fullname, ispkg in plugin_finder.iter_plugins(plugin_package):
+    for fullname, ispkg in sorted(plugin_finder.iter_plugins(plugin_package)):
         if filter is not None and not filter(fullname, ispkg):
             continue
 

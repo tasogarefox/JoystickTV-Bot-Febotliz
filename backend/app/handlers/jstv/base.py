@@ -1,5 +1,5 @@
-from typing import TYPE_CHECKING, Generic, TypeVar, ClassVar, Any
-from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Generic, TypeVar, ClassVar
+from dataclasses import dataclass
 
 from app.events import jstv as evjstv
 from app.utils import reqcls
@@ -8,7 +8,6 @@ from ..base import BaseHandlerSettings, BaseHandlerContext, BaseHandler
 
 if TYPE_CHECKING:
     from app.connectors.joysticktv import JoystickTVConnector
-    from app.db.models import Channel, User, Viewer
 
 __all__ = [
     "JSTVHandlerSettings",
@@ -45,12 +44,6 @@ class JSTVHandlerContext(
 
     message: MessageT
 
-    channel: "Channel"
-    user: "User | None"
-    viewer: "Viewer | None"
-
-    extra: dict[Any, Any] = field(default_factory=dict)
-
 
 # ==============================================================================
 # Handler
@@ -62,4 +55,4 @@ class JSTVBaseHandler(
 ):
     __slots__ = ()
 
-    msgtype: ClassVar[type[evjstv.JSTVMessage]] = reqcls.required_field()
+    msgtypes: ClassVar[tuple[type[evjstv.JSTVMessage], ...]] = reqcls.required_field()

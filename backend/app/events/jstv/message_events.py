@@ -50,6 +50,7 @@ __all__ = [
     "JSTVBaseUserPresence",
     "JSTVUserEnteredStream",
     "JSTVUserLeftStream",
+    "JSTVChatEmote",
     "JSTVBaseChatMessage",
     "JSTVNewChatMessage",
 ]
@@ -100,7 +101,7 @@ class JSTVMessageEvent(JSTVEvent, LoggedModel, Generic[JSTVMessageT]):
 
         Convenience proxy to `self.message.actor`.
         """
-        return self.message.actor
+        return self.message.actorname
 
 # ==============================================================================
 # Data Models
@@ -171,7 +172,7 @@ class JSTVMessage(LoggedModel):
         return text
 
     @property
-    def actor(self) -> str | None:
+    def actorname(self) -> str | None:
         """
         Username of the primary user associated with this message, if any.
 
@@ -212,7 +213,7 @@ class JSTVBaseStreamLivespan(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.who
 
     class Metadata(LoggedModel):
@@ -236,7 +237,7 @@ class JSTVFollowed(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.who
 
     class Metadata(LoggedModel):
@@ -257,7 +258,7 @@ class JSTVSubscribed(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.who
 
     class Metadata(LoggedModel):
@@ -279,7 +280,7 @@ class JSTVTipped(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.who
 
     class Metadata(LoggedModel):
@@ -307,7 +308,7 @@ class JSTVTipGoalIncreased(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.by_user
 
     class Metadata(LoggedModel):
@@ -332,7 +333,7 @@ class JSTVMilestoneCompleted(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.who
 
     class Metadata(LoggedModel):
@@ -347,7 +348,7 @@ class JSTVTipGoalMet(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.who
 
     class Metadata(LoggedModel):
@@ -362,7 +363,7 @@ class JSTVStreamDropin(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.origin
 
     class Metadata(LoggedModel):
@@ -377,7 +378,7 @@ class JSTVStreamDroppedIn(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.metadata.who
 
     class Metadata(LoggedModel):
@@ -407,7 +408,7 @@ class JSTVDeviceDisconnected(JSTVBaseDeviceConnection):
 
 class JSTVBaseUserPresence(JSTVBaseMessageWithId):
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.username
 
     @property
@@ -420,11 +421,16 @@ class JSTVUserEnteredStream(JSTVBaseUserPresence):
 class JSTVUserLeftStream(JSTVBaseUserPresence):
     discriminator = "UserPresence:leave_stream"
 
+class JSTVChatEmote(LoggedModel):
+    code: str
+    signedUrl: str
+    signedThumbnailUrl: str
+
 class JSTVBaseChatMessage(JSTVBaseMessageWithMessageId):
     visibility: str
     botCommand: str | None = None
     botCommandArg: str | None = None
-    emotesUsed: list[str]
+    emotesUsed: tuple[JSTVChatEmote, ...]
     author: JSTVAuthor
     streamer: JSTVStreamer
     mention: bool
@@ -439,7 +445,7 @@ class JSTVBaseChatMessage(JSTVBaseMessageWithMessageId):
         )
 
     @property
-    def actor(self) -> str:
+    def actorname(self) -> str:
         return self.author.username
 
     @property

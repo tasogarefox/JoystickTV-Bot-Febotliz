@@ -75,6 +75,10 @@ class BaseHandler(
         subclasses[key] = cls
 
     @classmethod
+    def is_implemented(cls) -> bool:
+        return reqcls.is_implemented(cls)
+
+    @classmethod
     def get_handler(cls, key: str, default: MissingT = MISSING) -> type["BaseHandler[ContextT, SettingsT]"] | MissingT:
         try:
             return cls._subclasses[key]

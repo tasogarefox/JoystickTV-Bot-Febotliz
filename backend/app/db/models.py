@@ -26,7 +26,7 @@ class ConnectionState(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
 
-    last_event_received_at: Mapped[datetime] = mapped_column(AwareDateTime, nullable=True)
+    last_event_received_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
 
 # ==============================================================================
 # User Models
@@ -60,7 +60,7 @@ class Channel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
     channel_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
-    owner_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), default=None, unique=True, index=True, nullable=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), default=None, unique=True, index=True, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, onupdate=utcnow, nullable=False)
@@ -182,10 +182,10 @@ class Viewer(Base):
 
     join_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # number of times viewer is present (for multiple devices)
 
-    chatted_at: Mapped[datetime] = mapped_column(AwareDateTime, nullable=True)
-    followed_at: Mapped[datetime] = mapped_column(AwareDateTime, nullable=True)
-    subscribed_at: Mapped[datetime] = mapped_column(AwareDateTime, nullable=True)
-    tipped_at: Mapped[datetime] = mapped_column(AwareDateTime, nullable=True)
+    chatted_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    followed_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    subscribed_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    tipped_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
 
     watch_time: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     points: Mapped[float] = mapped_column(Float, default=0, nullable=False)
@@ -245,7 +245,7 @@ class Command(Base):
 
     key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
 
-    default_alias_id: Mapped[int] = mapped_column(Integer, ForeignKey("command_aliases.id", ondelete="SET NULL"), nullable=True)
+    default_alias_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("command_aliases.id", ondelete="SET NULL"), nullable=True)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

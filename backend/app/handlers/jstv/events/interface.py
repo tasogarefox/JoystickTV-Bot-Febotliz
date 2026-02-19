@@ -33,9 +33,9 @@ def initialize() -> None:
         try:
             for handler in plugin.__dict__.values():
                 if (
-                    handler is JSTVEventHandler or
                     not isinstance(handler, type) or
                     not issubclass(handler, JSTVEventHandler)
+                    or not handler.is_implemented()
                 ):
                     continue
 
@@ -56,6 +56,8 @@ def register(handler: type[JSTVEventHandler[Any]]) -> None:
         raise ValueError(f"Handler already registered: {handler.key}")
 
     HANDLERS[handler.key] = handler
-    HANDLERS_BY_TYPE.setdefault(handler.msgtype, []).append(handler)
+
+    for msgtype in handler.msgtypes:
+        HANDLERS_BY_TYPE.setdefault(msgtype, []).append(handler)
 
     logger.info("Registered handler %r", handler.key)

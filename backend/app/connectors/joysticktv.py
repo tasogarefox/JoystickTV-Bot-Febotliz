@@ -19,6 +19,7 @@ from app.handlers.jstv import (
 )
 
 from app.db.database import get_async_db
+from app.db.enums import CommandAccessLevel
 
 from app.events import jstv as evjstv
 
@@ -39,7 +40,7 @@ URL = f"{WS_HOST}?token={ACCESS_TOKEN}"
 
 SUBPROTOCOL_ACTIONABLE = websockets.Subprotocol("actioncable-v1-json")
 
-VIP_USERS = getenv_list("JOYSTICKTV_VIP_USERS")
+VIP_USERS = tuple(x.casefold() for x in getenv_list("JOYSTICKTV_VIP_USERS"))
 
 
 # ==============================================================================
@@ -236,7 +237,7 @@ class JoystickTVConnector(WebSocketConnector):
 
         async with get_async_db() as db:
             channel_id = evmsg.channelId
-            username = evmsg.actor
+            username = evmsg.actorname
 
             channel = await jstv_db.get_or_create_channel(db, channel_id)
             user = await jstv_db.get_or_create_user(db, username) if username else None
@@ -254,7 +255,7 @@ class JoystickTVConnector(WebSocketConnector):
                     viewer=viewer,
                 )
 
-                self.logger.info("Invoking event handler %r", handler.key)
+                self.logger.debug("Invoking event handler %r", handler.key)
 
                 try:
                     if not await handler.handle(ctx):
@@ -301,12 +302,11 @@ class JoystickTVConnector(WebSocketConnector):
             await jstv_dbstate.on_stream_ended(db, channel_id)
             await db.commit()
 
-    async def on_new_chat(self, evmsg: evjstv.JSTVNewChatMessage):
+    async def on_new_chat(self, evmsg: evjstv.JSTVNewChatMessage) -> None:
         channel_id = evmsg.channelId
         username = evmsg.author.username
 
-        text_lower = evmsg.text.lower()
-        bot_command_lower = (evmsg.botCommand or "").lower()
+        bot_command_fold = (evmsg.botCommand or "").casefold()
 
         async with get_async_db() as db:
             channel = await jstv_db.get_or_create_channel(db, channel_id)
@@ -315,16 +315,41 @@ class JoystickTVConnector(WebSocketConnector):
 
             await jstv_dbstate.on_new_chat(db, channel, user, viewer)
 
-            cmd = command_handlers.get_by_alias(bot_command_lower)
+            cmd = command_handlers.get_by_alias(bot_command_fold)
             if cmd is not None:
-                await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
-
                 settings = cmd.settings
+
+                access_level = CommandAccessLevel.viewer
+                if evmsg.sameAuthorAsStreamer:
+                    access_level = CommandAccessLevel.broadcaster
+                elif evmsg.author.isModerator:
+                    access_level = CommandAccessLevel.moderator
+                elif evmsg.author.slug.casefold() in VIP_USERS:
+                    access_level = CommandAccessLevel.vip
+                elif evmsg.author.isSubscriber:
+                    access_level = CommandAccessLevel.subscriber
+                elif viewer.followed_at is not None:
+                    if evmsg.author.isVerified:
+                        access_level = CommandAccessLevel.verified_follower
+                    else:
+                        access_level = CommandAccessLevel.follower
+                elif evmsg.author.isVerified:
+                    access_level = CommandAccessLevel.verified
+
+                if access_level < settings.min_access_level:
+                    await self.send_chat_reply(evmsg, (
+                        f"You do not have permission to"
+                        f" use the !{bot_command_fold} command"
+                    ), mention=True)
+                    return
+
+                await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
 
                 ctx = command_handlers.JSTVCommandContext(
                     settings=settings,
                     connector=self,
                     message=evmsg,
+                    alias=bot_command_fold,
                     channel=channel,
                     user=user,
                     viewer=viewer,
@@ -333,7 +358,7 @@ class JoystickTVConnector(WebSocketConnector):
                 if settings.point_cost > viewer.points:
                     await self.send_chat_reply(
                         evmsg,
-                        f"You do not have enough points to use the {bot_command_lower} command",
+                        f"You do not have enough points to use the {bot_command_fold} command",
                         whisper=True,
                     )
                     return
@@ -346,21 +371,14 @@ class JoystickTVConnector(WebSocketConnector):
                 except Exception as e:
                     self.logger.exception("Failed to handle command %r: %s", cmd.key, e)
 
-                viewer.points -= max(0, settings.point_cost)
+                if settings.point_cost > 0:
+                    viewer.points = max(0, viewer.points - settings.point_cost)
 
-            elif bot_command_lower in ["points", "p"]:
-                await jstv_dbstate.reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
-                await self.send_chat_reply(
-                    evmsg,
-                    f"has {int(viewer.points)} points",
-                    mention=True,
-                )
-
-            elif bot_command_lower == "test_tip":
+            elif bot_command_fold == "test_tip":
                 if not evmsg.sameAuthorAsStreamer:
                     await self.send_chat_reply(
                         evmsg,
-                        f"You do not have the necessary permissions to use the {bot_command_lower} command",
+                        f"You do not have the necessary permissions to use the {bot_command_fold} command",
                         mention=True,
                     )
                     return
@@ -393,234 +411,9 @@ class JoystickTVConnector(WebSocketConnector):
                     self.on_tipped(tipped_evmsg),
                 )
 
-            elif any(x == bot_command_lower for x in ["pet", "pets", "pat", "pats"]) or any(x in text_lower for x in [":felizpet:"]):
-                await asyncio.gather(
-                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
-                    self.send_warudo("HeadPets"),
-                )
-
-            elif any(x == bot_command_lower for x in ["pet1", "pets1", "pat1", "pats1"]):
-                await asyncio.gather(
-                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
-                    self.send_warudo("HeadPets1"),
-                )
-
-            elif any(x == bot_command_lower for x in ["pet2", "pets2", "pat2", "pats2"]):
-                await asyncio.gather(
-                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
-                    self.send_warudo("HeadPets2"),
-                )
-
-            elif any(x == bot_command_lower for x in ["pet3", "pets3", "pat3", "pats3"]):
-                await asyncio.gather(
-                    self.send_chat_reply(evmsg, f"Pet that fluff-ball <3"),
-                    self.send_warudo("HeadPets3"),
-                )
-
-            elif any(x == bot_command_lower for x in ["boop", "boops"]):
-                await self.send_warudo("Boop")
-
-            elif any(x == bot_command_lower for x in ["lick", "licks", "noselick", "noselicks", "kiss", "kisses"]):
-                await self.send_warudo("NoseLick")
-
-            elif any(x == bot_command_lower for x in ["earlick", "earlicks"]):
-                await self.send_warudo("EarLick")
-
-            elif any(x == bot_command_lower for x in ["bellylick", "bellylicks"]):
-                await self.send_warudo("BellyLick")
-
-            elif bot_command_lower == "bonk":
-                await self.send_warudo("Bonk")
-
-            elif any(x == bot_command_lower for x in ["lewdpet", "lewdpets", "lewdpat", "lewdpats"]):
-                vibes = (VibeFrame.new_override(10, random.uniform(0.1, 0.5)),)
-
-                await asyncio.gather(
-                    self.talkto("Buttplug", "vibe", VibeGroup(vibes, channel_id=channel_id, username=username)),
-                    self.send_warudo("LewdPets"),
-                )
-
-            elif any(x == bot_command_lower for x in ["lewdboop", "lewdboops"]):
-                vibes = (VibeFrame.new_override(10, random.uniform(0.1, 0.5)),)
-
-                await asyncio.gather(
-                    self.talkto("Buttplug", "vibe", VibeGroup(vibes, channel_id=channel_id, username=username)),
-                    self.send_warudo("LewdBoop"),
-                )
-
-            elif any(x == bot_command_lower for x in ["niplick", "niplicks", "nipplelick", "nipplelicks"]):
-                vibes = (VibeFrame.new_override(10, random.uniform(0.1, 0.5)),)
-
-                await asyncio.gather(
-                    self.talkto("Buttplug", "vibe", VibeGroup(vibes, channel_id=channel_id, username=username)),
-                    self.send_warudo("NippleLick"),
-                )
-
-            elif any(x == bot_command_lower for x in ["beanlick", "beanlicks", "pawlick", "pawlicks"]):
-                vibes = (VibeFrame.new_override(10, random.uniform(0.1, 0.5)),)
-
-                await asyncio.gather(
-                    self.talkto("Buttplug", "vibe", VibeGroup(vibes, channel_id=channel_id, username=username)),
-                    self.send_warudo("BeanLick"),
-                )
-
-            elif any(x == bot_command_lower for x in ["lewdlick", "lewdlicks", "vulvalick", "vulvalicks", "cookielick", "cookielicks"]):
-                vibes = (VibeFrame.new_override(10, random.uniform(0.1, 0.5)),)
-
-                await asyncio.gather(
-                    self.talkto("Buttplug", "vibe", VibeGroup(vibes, channel_id=channel_id, username=username)),
-                    self.send_warudo("LewdLick"),
-                )
-
-            elif bot_command_lower == "spank":
-                vibes = tuple(v for v in [
-                    VibeFrame.new_override(0.5, random.uniform(0.5, 1.0)),
-                    VibeFrame.new_override(0.5, 0)
-                ] for _ in range(random.randint(3, 10)))
-
-                await asyncio.gather(
-                    self.talkto("Buttplug", "vibe", VibeGroup(vibes, channel_id=channel_id, username=username)),
-                    self.send_warudo("Spank"),
-                )
-
-            elif bot_command_lower == "hearts":
-                await self.send_warudo("Hearts")
-
-            elif bot_command_lower == "love":
-                await self.send_warudo("Love")
-
-            elif bot_command_lower == "balls":
-                await self.send_warudo("Balls")
-
-            elif any(x == bot_command_lower for x in ["feed", "food"]):
-                await self.send_warudo("Feed")
-
-            elif any(x == bot_command_lower for x in ["hydrate", "water"]):
-                await self.send_warudo("Hydrate")
-
-            elif bot_command_lower == "pie":
-                await self.send_warudo("Pie")
-
-            elif any(x == bot_command_lower for x in ["cum", "coom", "nut"]):
-                await self.send_warudo("Cum")
-
-            elif any(x == bot_command_lower for x in ["plush", "plushify"]):
-                animal, prop = random.choice(QUIRKY_ANIMALS_LIST)
-
-                await asyncio.gather(
-                    self.send_chat_reply(
-                        evmsg,
-                        f"has been plushified into a {animal}",
-                        mention=True,
-                    ),
-                    self.send_warudo("Plushify", [username, prop]),
-                )
-
-            elif any(x == bot_command_lower for x in ["viewersign", "sign", "showsign"]):
-                if not evmsg.botCommandArg:
-                    await self.send_chat_reply(
-                        evmsg,
-                        f"Usage: !{bot_command_lower} <TEXT>",
-                        mention=True,
-                    )
-                    return
-
-                await self.send_warudo("ViewerSign", evmsg.botCommandArg)
-
-            elif bot_command_lower == "clip":
-                await asyncio.gather(
-                    self.talkto("OBS", "clip", None),
-                    self.send_chat_reply(evmsg, f"Creating a clip of the last 2 minutes"),
-                )
-
-            elif bot_command_lower in ["vibe_disable", "vibe_delay"]:
-                if not evmsg.sameAuthorAsStreamer:
-                    await self.send_chat_reply(
-                        evmsg,
-                        f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                        mention=True,
-                    )
-                    return
-
-                try:
-                    if not evmsg.botCommandArg:
-                        raise ValueError
-                    delay = float(evmsg.botCommandArg)
-                except ValueError:
-                    await self.send_chat_reply(
-                        evmsg,
-                        f"Usage: !{bot_command_lower} [SECONDS]",
-                        mention=True,
-                    )
-                    return
-
-                await self.talkto("Buttplug", "disable", delay)
-                return
-
-            elif bot_command_lower in ["vibe_stop", "vibe_clear"]:
-                if not evmsg.sameAuthorAsStreamer:
-                    await self.send_chat_reply(
-                        evmsg,
-                        f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                        mention=True,
-                    )
-                    return
-
-                await self.talkto("Buttplug", "stop", None)
-                return
-
-            elif bot_command_lower == "vibe":
-                if not evmsg.sameAuthorAsStreamer and evmsg.author.slug.lower() not in VIP_USERS:
-                    await self.send_chat_reply(
-                        evmsg,
-                        f"You do not have the necessary permissions to use the {bot_command_lower} command",
-                        mention=True,
-                    )
-                    return
-
-                vibestr = evmsg.botCommandArg
-                try:
-                    if not vibestr:
-                        raise ValueError
-
-                    vibes = parse_vibes(vibestr)
-
-                except ValueError as e:
-                    # Show the usage
-                    errmsg = str(e) if isinstance(e, Exception) else ""
-                    await self.send_chat_reply(evmsg, errmsg + (
-                        # f"\nUsage: !{bot_command_lower} [AMOUNT%] [TIMEs] [DEVICE] ..."
-                        f"\nExamples: !{bot_command_lower} 20% 5s"
-                        f"; !{bot_command_lower} 5s 10% 50% 100%"
-                        f"; !{bot_command_lower} 0.5s 50% 0% 5r"
-                        # f"; !{bot_command_lower} deviceA 5s 50%"
-                        # f\n"Tokens may appear in any order. Percent and seconds pair automatically. Devices are optional."
-                    ).strip(), mention=True)
-
-                else:
-                    await self.talkto("Buttplug", "vibe", VibeGroup(
-                        frames=vibes,
-                        channel_id=channel_id,
-                        username=username,
-                    ))
-
-                return
-
-            elif "trobbio" in text_lower:
-                await self.send_warudo("Trobbio")
-
-            elif "blahaj" in text_lower:
-                await self.send_warudo("Blahaj")
-
-            elif any(x in text_lower for x in ["cookie", "vulva", "vagina", "pussy"]):
-                await self.send_warudo("Cookie")
-
-            elif any(x in text_lower for x in ["dildo", "penis", "dick"]):
-                await self.send_warudo("Dildo")
-
-            elif bot_command_lower:
+            elif bot_command_fold:
                 args = evmsg.splitBotCommandArg()
-                args.insert(0, bot_command_lower)
+                args.insert(0, bot_command_fold)
                 await self.send_warudo("OnChatCmd", args)
 
             await db.commit()
