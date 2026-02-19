@@ -3,7 +3,6 @@ import asyncio
 # import enum
 import logging
 import json
-import random
 import websockets
 import html
 
@@ -330,7 +329,7 @@ class JoystickTVConnector(WebSocketConnector):
                 if access_level < settings.min_access_level:
                     await self.send_chat_reply(evmsg, (
                         f"You do not have permission to"
-                        f" use the !{bot_command_fold} command"
+                        f" use the {bot_command_fold} command"
                     ), mention=True)
                     return
 
@@ -369,7 +368,7 @@ class JoystickTVConnector(WebSocketConnector):
                 if not evmsg.sameAuthorAsStreamer:
                     await self.send_chat_reply(
                         evmsg,
-                        f"You do not have the necessary permissions to use the {bot_command_fold} command",
+                        f"You do not have permission to use the {bot_command_fold} command",
                         mention=True,
                     )
                     return
