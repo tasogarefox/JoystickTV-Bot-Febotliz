@@ -18,7 +18,7 @@ from app.handlers.jstv import (
     commands as command_handlers,
 )
 
-from app.db.database import get_async_db
+from app.db.database import AsyncSessionMaker
 from app.db.enums import CommandAccessLevel
 
 from app.events import jstv as evjstv
@@ -116,13 +116,11 @@ class JoystickTVConnector(WebSocketConnector):
         """
         self.logger.info("Subscribing to gateway...")
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await asyncio.gather(
                 self.sendnow({"command": "subscribe", "identifier": GATEWAY_IDENTIFIER}),
                 self._update_live_channels(db),
             )
-
-            await db.commit()
 
         # WARNING: Must send messages AFTER _update_live_channels() is done to ensure consistent state
         await self.send_live_chats("おはよう世界 Good Morning World <3")
@@ -149,14 +147,12 @@ class JoystickTVConnector(WebSocketConnector):
         """Handle loss of connection or shutdown."""
         self.logger.info("Connection closed")
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_disconnected(db)
-            await db.commit()
 
     async def on_message(self, data: dict[Any, Any]):
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_server_message(db)
-            await db.commit()
 
         try:
             event = evjstv.JSTVEvent.parse(data)
@@ -235,7 +231,7 @@ class JoystickTVConnector(WebSocketConnector):
         elif isinstance(evmsg, evjstv.JSTVStreamDroppedIn):
             await self.on_stream_dropped_in(evmsg)
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             channel_id = evmsg.channelId
             username = evmsg.actorname
 
@@ -263,8 +259,6 @@ class JoystickTVConnector(WebSocketConnector):
                 except Exception as e:
                     self.logger.exception("Failed to handle command %r: %s", handler.key, e)
 
-            await db.commit()
-
     async def on_stream_started(self, evmsg: evjstv.JSTVSteamStarted):
         """Handle a channel transitioning to live."""
         channel_id = evmsg.channelId
@@ -274,9 +268,8 @@ class JoystickTVConnector(WebSocketConnector):
         if live_channel is None:
             live_channel = self.live_channels[channel_id] = LiveChannel()
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_stream_started(db, channel_id)
-            await db.commit()
 
     async def on_stream_resuming(self, evmsg: evjstv.JSTVStreamResuming):
         """Handle a channel resuming its stream after a short disconnect."""
@@ -287,9 +280,8 @@ class JoystickTVConnector(WebSocketConnector):
         if live_channel is None:
             live_channel = self.live_channels[channel_id] = LiveChannel()
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_stream_resuming(db, channel_id)
-            await db.commit()
 
     async def on_stream_ended(self, evmsg: evjstv.JSTVStreamEnded):
         """Handle a channel transitioning to offline."""
@@ -298,9 +290,8 @@ class JoystickTVConnector(WebSocketConnector):
         # Remove channel from in-memory live cache
         self.live_channels.pop(channel_id, None)
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_stream_ended(db, channel_id)
-            await db.commit()
 
     async def on_new_chat(self, evmsg: evjstv.JSTVNewChatMessage) -> None:
         channel_id = evmsg.channelId
@@ -308,7 +299,7 @@ class JoystickTVConnector(WebSocketConnector):
 
         bot_command_fold = (evmsg.botCommand or "").casefold()
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             channel = await jstv_db.get_or_create_channel(db, channel_id)
             user = await jstv_db.get_or_create_user(db, username)
             viewer = await jstv_db.get_or_create_viewer(db, channel, user)
@@ -416,32 +407,28 @@ class JoystickTVConnector(WebSocketConnector):
                 args.insert(0, bot_command_fold)
                 await self.send_warudo("OnChatCmd", args)
 
-            await db.commit()
-
     async def on_enter_stream(self, evmsg: evjstv.JSTVUserEnteredStream):
         """Handle a viewer joining a channel."""
         channel_id = evmsg.channelId
         username = evmsg.username
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_enter_stream(db, channel_id, username, None)
-            await db.commit()
 
     async def on_leave_stream(self, evmsg: evjstv.JSTVUserLeftStream):
         """Handle a viewer leaving a channel."""
         channel_id = evmsg.channelId
         username = evmsg.username
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_leave_stream(db, channel_id, username, None)
-            await db.commit()
 
     async def on_followed(self, evmsg: evjstv.JSTVFollowed):
         metadata = evmsg.metadata
         channel_id = evmsg.channelId
         username = metadata.who
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             points = await jstv_dbstate.on_followed(db, channel_id, username, None)
             if points > 0:
                 # tasks.append(self.send_chat_reply(evmsg, (
@@ -452,14 +439,12 @@ class JoystickTVConnector(WebSocketConnector):
 
             await self.send_warudo("OnFollowed")
 
-            await db.commit()
-
     async def on_subscribed(self, evmsg: evjstv.JSTVSubscribed):
         metadata = evmsg.metadata
         channel_id = evmsg.channelId
         username = metadata.who
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             points = await jstv_dbstate.on_subscribed(db, channel_id, username, None)
             if points > 0:
                 # tasks.append(self.send_chat_reply(evmsg, (
@@ -470,8 +455,6 @@ class JoystickTVConnector(WebSocketConnector):
 
             await self.send_warudo("OnSubscribed", username)
 
-            await db.commit()
-
     async def on_tipped(self, evmsg: evjstv.JSTVTipped):
         OVERRIDE_VIBES = True
 
@@ -480,7 +463,7 @@ class JoystickTVConnector(WebSocketConnector):
         username = metadata.who
         amount = metadata.how_much
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             tasks: list[Coroutine[Any, Any, None]] = []
 
             points = await jstv_dbstate.on_tipped(db, channel_id, username, None, amount)
@@ -538,7 +521,6 @@ class JoystickTVConnector(WebSocketConnector):
                 tasks.append(self.send_warudo("OnRedeemed", tip_menu_item))
 
             await asyncio.gather(*tasks)
-            await db.commit()
 
     async def on_tip_goal_increased(self, evmsg: evjstv.JSTVTipGoalIncreased):
         STEP = 100
@@ -573,7 +555,7 @@ class JoystickTVConnector(WebSocketConnector):
         username = metadata.who
         number_of_viewers = metadata.number_of_viewers
 
-        async with get_async_db() as db:
+        async with AsyncSessionMaker.begin() as db:
             points = await jstv_dbstate.on_raided(db, channel_id, username, None, number_of_viewers)
             if points > 0:
                 # tasks.append(self.send_chat_reply(evmsg, (
@@ -583,8 +565,6 @@ class JoystickTVConnector(WebSocketConnector):
                 pass
 
             await self.send_warudo("OnStreamDroppedIn", number_of_viewers)
-
-            await db.commit()
 
     async def send_chat(
         self,

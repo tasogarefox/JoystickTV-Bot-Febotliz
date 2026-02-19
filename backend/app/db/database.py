@@ -19,7 +19,7 @@ engine = create_async_engine(
     future=True,
     poolclass=NullPool,  # Fix process not exiting when using AsyncEngine.begin() with SQLAlchemy>=2.0.38
 )
-AsyncSessionLocal = async_sessionmaker(
+AsyncSessionMaker = async_sessionmaker(
     autocommit=False,
     autoflush=False,
     bind=engine,
@@ -50,17 +50,16 @@ async def async_setup_database():
 
 async def depend_async_db():
     """
-    Dependency to get a database session.
-    NOTE: Must db.commit() to save changes.
-    WARNING: Any usage of database objects, even read-only, must come BEFORE db.commit().
+    FastAPI dependency to get a database session.
+    Transactions have to be started manually.
     """
-    db = AsyncSessionLocal()
-    try:
+    async with AsyncSessionMaker() as db:
         yield db
-    except:
-        await db.rollback()
-        raise
-    finally:
-        await db.close()
 
-get_async_db = asynccontextmanager(depend_async_db)
+async def depend_async_db_transaction():
+    """
+    FastAPI dependency to get a database session.
+    Transactions are started and committed automatically.
+    """
+    async with AsyncSessionMaker.begin() as db:
+        yield db

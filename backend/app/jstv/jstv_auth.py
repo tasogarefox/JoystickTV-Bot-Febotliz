@@ -6,7 +6,7 @@ from sqlalchemy.orm import joinedload
 
 from app.utils.datetime import utcnow
 
-from app.db.database import get_async_db
+from app.db.database import AsyncSessionMaker
 from app.db.models import User, Channel, ChannelAccessToken
 
 from . import jstv_web
@@ -29,7 +29,7 @@ TOKEN_REFRESH_LEEWAY_HOURS = 24
 # Functions
 
 async def get_access_token(channel_id: str) -> str:
-    async with get_async_db() as db:
+    async with AsyncSessionMaker.begin() as db:
         result = await db.execute(
             select(ChannelAccessToken)
             .join(Channel)
@@ -52,14 +52,12 @@ async def get_access_token(channel_id: str) -> str:
                 raise JSTVTokenRefreshError("Failed to refresh access token") from e
 
             token.set_tokens(data.access_token, data.refresh_token, data.expires_at)
-            await db.commit()
-
             return data.access_token
 
         return token.get_access_token()
 
 async def init_access_token(auth_code: str) -> str:
-    async with get_async_db() as db:
+    async with AsyncSessionMaker.begin() as db:
         # Get access token
         try:
             data = await jstv_web.fetch_init_access_token(auth_code)
@@ -116,7 +114,5 @@ async def init_access_token(auth_code: str) -> str:
                 expires_at=data.expires_at,
             )
             db.add(db_token)
-
-        await db.commit()
 
         return data.access_token
