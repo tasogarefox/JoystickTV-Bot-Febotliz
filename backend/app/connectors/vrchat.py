@@ -1,4 +1,4 @@
-from typing import Any, Optional, Callable, Coroutine
+from typing import ClassVar, Any, Callable, Coroutine
 from contextlib import asynccontextmanager
 import os
 import asyncio
@@ -67,9 +67,9 @@ class VRChatReceiver:
     dispatcher: Dispatcher
     thread: threading.Thread
 
-    _loop: Optional[asyncio.AbstractEventLoop] = None
+    _loop: asyncio.AbstractEventLoop | None = None
 
-    def __init__(self, url: str, callback: OSCCallback, *, logger: Optional[logging.Logger] = None):
+    def __init__(self, url: str, callback: OSCCallback, *, logger: logging.Logger | None = None):
         self.logger = logger or logging.getLogger(SERVER_NAME)
         self.callback = callback
         self.dispatcher = self._create_dispatcher()
@@ -124,32 +124,23 @@ class VRChatReceiver:
 # VRChat Connector
 
 class VRChatConnector(BaseConnector):
-    client_url: str
-    server_url: str
+    NAME: ClassVar[str] = CLIENT_NAME
 
     _client: SimpleUDPClient
     _server: VRChatReceiver
 
-    def __init__(
-        self,
-        manager: ConnectorManager,
-        name: Optional[str] = None,
-        client_url: Optional[str] = None,
-        server_url: Optional[str] = None,
-    ):
-        super().__init__(manager, name or CLIENT_NAME)
-        self.client_url = client_url or CLIENT_HOST
-        self.server_url = server_url or SERVER_HOST
+    def __init__(self, manager: ConnectorManager):
+        super().__init__(manager)
 
         self._client = self._create_client()
         self._server = self._create_server()
 
     def _create_client(self) -> SimpleUDPClient:
-        return SimpleUDPClient(*parse_hostport(self.client_url))
+        return SimpleUDPClient(*parse_hostport(CLIENT_HOST))
 
     def _create_server(self) -> VRChatReceiver:
         logger = self.logger.getChild(SERVER_HOST)
-        return VRChatReceiver(self.server_url, self.on_param, logger=logger)
+        return VRChatReceiver(SERVER_HOST, self.on_param, logger=logger)
 
     def _create_connection(self) -> SimpleUDPClient:
         return self._client

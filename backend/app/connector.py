@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Any
+from typing import NamedTuple, TypeVar, ClassVar, Optional, Any, overload
 from contextlib import asynccontextmanager
 import abc
 import itertools
@@ -6,6 +6,7 @@ import asyncio
 import logging
 import json
 import websockets
+import socket
 
 from .settings import MAX_INIT_ATTEMPTS, MAX_RECONNECT_DELAY
 from .utils.asyncio import async_select
@@ -15,6 +16,23 @@ from .utils.asyncio import async_select
 # Config
 
 MANAGER_NAME = "Manager"
+
+
+# ==============================================================================
+# Constants
+
+T = TypeVar("T")
+ConnectorT = TypeVar("ConnectorT", bound="BaseConnector")
+
+MISSING = object()
+
+
+# ==============================================================================
+# Exceptions
+
+class ConnectorControlEvent(Exception): pass
+class ConnectorShutdown(ConnectorControlEvent): pass
+class ConnectorReconnect(ConnectorControlEvent): pass
 
 
 # ==============================================================================
@@ -70,13 +88,61 @@ class ConnectorManager:
         self._shutdown = asyncio.Event()
         self._msg_queue = asyncio.Queue()
 
+    @overload
+    def get(self, name_or_type: str, default: T = None) -> "BaseConnector" | T: ...
+
+    @overload
+    def get(self, name_or_type: type[ConnectorT], default: T = None) -> ConnectorT | T: ...
+
+    def get(
+        self,
+        name_or_type: str | type[ConnectorT],
+        default: T = None,
+    ) -> "BaseConnector" | ConnectorT | T:
+        """Get a connector by name or type."""
+        try:
+            return self[name_or_type]
+        except (KeyError, ValueError):
+            return default
+
+    @overload
+    def __getitem__(self, name_or_type: str) -> "BaseConnector": ...
+
+    @overload
+    def __getitem__(self, name_or_type: type[ConnectorT]) -> ConnectorT: ...
+
+    def __getitem__(self, name_or_type: str | type[ConnectorT]) -> "BaseConnector" | ConnectorT:
+        """Get a connector by name or type."""
+        typ: type[ConnectorT] | None
+        if isinstance(name_or_type, str):
+            name = name_or_type
+            typ = None
+        elif isinstance(name_or_type, type) and issubclass(name_or_type, BaseConnector):
+            typ = name_or_type
+            try:
+                name = name_or_type.NAME
+            except AttributeError:
+                raise ValueError(
+                    f"Connector type {name_or_type.__name__} has"
+                    " no NAME class attribute"
+                )
+        else:
+            raise TypeError("name_or_type must be a string or a connector type")
+
+        connector = self._connectors[name]
+
+        if typ is not None and not isinstance(connector, typ):
+            raise ValueError(f"Connector {name} is not of type {typ.__name__}")
+
+        return connector
+
     def register(self, connector: "BaseConnector"):
         """Register a connector with the manager."""
-        if connector.name in self._connectors:
-            raise ValueError(f"Connector already registered: {connector.name}")
+        if connector.NAME in self._connectors:
+            raise ValueError(f"Connector already registered: {connector.NAME}")
 
-        self._connectors[connector.name] = connector
-        self.logger.info("Registered connector: %s", connector.name)
+        self._connectors[connector.NAME] = connector
+        self.logger.info("Registered connector: %s", connector.NAME)
 
     async def run(self):
         """Start the manager and all registered connectors."""
@@ -137,19 +203,24 @@ class ConnectorManager:
 # BaseConnector
 
 class BaseConnector(abc.ABC):
-    name: str
-    manager: ConnectorManager
+    NAME: ClassVar[str]
+
+    manager: "ConnectorManager"
     logger: logging.Logger
+
     _shutdown: asyncio.Event
     _connected: bool = False
 
-    def __init__(self, manager: ConnectorManager, name: str):
-        self.name = name
+    def __init__(self, manager: "ConnectorManager"):
         self.manager = manager
-        self.logger = manager.logger.getChild(name)
+        self.logger = manager.logger.getChild(self.NAME)
         self._shutdown = asyncio.Event()
 
         manager.register(self)
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
 
     async def shutdown(self):
         """Shutdown the connector."""
@@ -190,6 +261,20 @@ class BaseConnector(abc.ABC):
 
                     await self.on_connected()
                     await self.main_loop()
+
+            except ConnectorShutdown as e:
+                self.logger.info("Received %r, shutting down connector...", e)
+                self._shutdown.set()
+                break
+
+            except ConnectorReconnect as e:
+                self.logger.info("Received %r, reconnecting...", e)
+
+            except ConnectorControlEvent as e:
+                self.logger.info((
+                    "Received unknown control event %r"
+                    ", ignoring and reconnecting..."
+                ), e)
 
             except asyncio.CancelledError:
                 self.logger.info("Received CancelledError, shutting down connector...")
@@ -240,26 +325,28 @@ class BaseConnector(abc.ABC):
 
     async def talk(self, action: str, data: Any):
         """Queue a message to this connector."""
-        await self.manager.talkto(self.name, self.name, action, data)
+        await self.manager.talkto(self.NAME, self.NAME, action, data)
 
     async def talkto(self, receiver: str, action: str, data: Any):
         """Queue a message to a specific connector."""
-        await self.manager.talkto(self.name, receiver, action, data)
+        await self.manager.talkto(self.NAME, receiver, action, data)
 
 
 # ==============================================================================
 # WebSocket Connector
 
 class WebSocketConnector(BaseConnector):
-    url: str
     _ws: Optional[websockets.ClientConnection] = None
 
-    def __init__(self, manager: ConnectorManager, name: str, url: str):
-        super().__init__(manager, name)
-        self.url = url
+    def __init__(self, manager: ConnectorManager):
+        super().__init__(manager)
+
+    @abc.abstractmethod
+    def _get_url(self) -> str:
+        ...
 
     def _create_connection(self) -> websockets.connect:
-        return websockets.connect(self.url)
+        return websockets.connect(self._get_url())
 
     @asynccontextmanager
     async def connect(self):
@@ -292,6 +379,10 @@ class WebSocketConnector(BaseConnector):
     async def on_error(self, error: Exception):
         if isinstance(error, websockets.ConnectionClosedError):
             self.logger.error("Connection closed in %s: %s", type(self).__name__, error)
+        elif isinstance(error, socket.gaierror):
+            self.logger.warning("Get Address Info error in %s: %s", type(self).__name__, error)
+        elif isinstance(error, TimeoutError):
+            self.logger.warning("Timeout in %s: %s", type(self).__name__, error)
         else:
             await super().on_error(error)
 
@@ -304,8 +395,10 @@ class WebSocketConnector(BaseConnector):
 
         return False
 
-    async def sendnow(self, data: Any):
+    async def sendnow(self, data: Any) -> bool:
         """Direct send to this connector."""
-        if self._connected and self._ws:
-            await self._ws.send(json.dumps(data))
-            self.logger.info("Sent: %s", data)
+        if not self._connected or not self._ws:
+            return False
+        await self._ws.send(json.dumps(data))
+        self.logger.info("Sent: %s", data)
+        return True

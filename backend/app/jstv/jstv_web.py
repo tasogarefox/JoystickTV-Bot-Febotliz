@@ -17,14 +17,13 @@ semaphore = asyncio.Semaphore(10)  # Limit concurrent web requests
 # ==============================================================================
 # Config
 
-HOST = os.getenv("JOYSTICKTV_HOST")
-WS_HOST = os.getenv("JOYSTICKTV_API_HOST")
 CLIENT_ID = os.getenv("JOYSTICKTV_CLIENT_ID")
 CLIENT_SECRET = os.getenv("JOYSTICKTV_CLIENT_SECRET")
-assert HOST, "Missing environment variable: JOYSTICKTV_HOST"
-assert WS_HOST, "Missing environment variable: JOYSTICKTV_API_HOST"
 assert CLIENT_ID, "Missing environment variable: JOYSTICKTV_CLIENT_ID"
 assert CLIENT_SECRET, "Missing environment variable: JOYSTICKTV_CLIENT_SECRET"
+
+HOST="https://joystick.tv"
+WS_HOST="wss://joystick.tv/cable"
 
 ACCESS_TOKEN = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode("ascii")).decode()
 GATEWAY_IDENTIFIER = '{"channel":"GatewayChannel"}'

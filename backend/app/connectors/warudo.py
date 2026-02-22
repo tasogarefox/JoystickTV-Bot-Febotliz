@@ -1,7 +1,7 @@
-from typing import Optional, Any
+from typing import ClassVar, Any
 import os
 
-from ..connector import ConnectorMessage, ConnectorManager, WebSocketConnector
+from ..connector import ConnectorMessage, WebSocketConnector
 
 
 # ==============================================================================
@@ -160,8 +160,10 @@ QUIRKY_ANIMALS_MAP: dict[str, str] = {
 # Warudo Connector
 
 class WarudoConnector(WebSocketConnector):
-    def __init__(self, manager: ConnectorManager, name: Optional[str] = None, url: Optional[str] = None):
-        super().__init__(manager, name or NAME, url or URL)
+    NAME: ClassVar[str] = NAME
+
+    def _get_url(self) -> str:
+        return URL
 
     async def talk_receive(self, msg: ConnectorMessage) -> bool:
         if await super().talk_receive(msg):

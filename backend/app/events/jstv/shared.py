@@ -1,8 +1,9 @@
-from typing import TypeVar, Annotated, ClassVar
+from typing import ClassVar
 import logging
-import json
 
-from pydantic import BaseModel, ConfigDict, BeforeValidator, ValidationError
+from pydantic import ValidationError
+
+from app.utils.pydantic import FrozenBaseModel, LoggedBaseModel
 
 from ..events import Event
 
@@ -17,43 +18,19 @@ __all__ = [
 
 
 # ==============================================================================
-# Helpers
+# Models
 
-def _parse_str_or_dict(v):
-    if isinstance(v, str):
-        return json.loads(v)
-    return v
+class JSTVLoggedModel(FrozenBaseModel, LoggedBaseModel):
+    logger = logger
 
-T = TypeVar("T")
-ParsedJSON = Annotated[T, BeforeValidator(_parse_str_or_dict)]
-
-
-# ==============================================================================
-# Data
-
-class JSTVBaseModel(BaseModel):
-    model_config = ConfigDict(
-        extra="allow",
-        frozen=True,
-    )
-
-class LoggedModel(JSTVBaseModel):
-    def model_post_init(self, __context):
-        if self.model_extra:
-            logger.warning(
-                "%s received unexpected fields: %s",
-                self.__class__.__name__,
-                list(self.model_extra.keys())
-            )
-
-class JSTVIdentifier(LoggedModel):
+class JSTVIdentifier(JSTVLoggedModel):
     channel: str
 
 
 # ==============================================================================
 # Events
 
-class JSTVEvent(Event, BaseModel):
+class JSTVEvent(Event, FrozenBaseModel):
     __subclslist: ClassVar[list[type["JSTVEvent"]]] = []
 
     def __init_subclass__(cls, **kwargs):

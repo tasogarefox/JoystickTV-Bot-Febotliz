@@ -7,6 +7,7 @@ from app.connectors.warudo import WarudoConnector
 from app.connectors.streamerbot import StreamerBotConnector
 from app.connectors.obs import OBSConnector
 from app.connectors.buttplug import ButtplugConnector
+from app.connectors.pishock import PiShockConnector
 from app.connectors.vrchat import VRChatConnector
 
 
@@ -31,6 +32,7 @@ class Bot(ConnectorManager):
         StreamerBotConnector(self)
         OBSConnector(self)
         ButtplugConnector(self)
+        PiShockConnector(self)
         VRChatConnector(self)
 
     async def run(self):

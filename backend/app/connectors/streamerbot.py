@@ -1,4 +1,4 @@
-from typing import Optional, Any
+from typing import ClassVar, Any
 import os
 import uuid
 
@@ -19,8 +19,13 @@ URL = WS_HOST
 # StreamerBot Connector
 
 class StreamerBotConnector(WebSocketConnector):
-    def __init__(self, manager: ConnectorManager, name: Optional[str] = None, url: Optional[str] = None):
-        super().__init__(manager, name or NAME, url or URL)
+    NAME: ClassVar[str] = NAME
+
+    def __init__(self, manager: ConnectorManager):
+        super().__init__(manager)
+
+    def _get_url(self) -> str:
+        return URL
 
     async def talk_receive(self, msg: ConnectorMessage) -> bool:
         if await super().talk_receive(msg):

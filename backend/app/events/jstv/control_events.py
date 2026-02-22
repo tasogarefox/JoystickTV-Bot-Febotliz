@@ -1,7 +1,9 @@
 from typing import ClassVar
 from datetime import datetime
 
-from .shared import JSTVEvent, LoggedModel, JSTVIdentifier, ParsedJSON
+from app.utils.pydantic import ParsedJSON
+
+from .shared import JSTVEvent, JSTVLoggedModel, JSTVIdentifier
 
 JSTVEventType = type[JSTVEvent]
 
@@ -17,7 +19,7 @@ __all__ = [
 # ==============================================================================
 # Events
 
-class JSTVControlEvent(JSTVEvent, LoggedModel):
+class JSTVControlEvent(JSTVEvent, JSTVLoggedModel):
     __subclsmap: ClassVar[dict[str, type["JSTVControlEvent"]]] = {}
 
     discriminator: ClassVar[str]

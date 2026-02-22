@@ -1,4 +1,4 @@
-from typing import Optional, Any, Coroutine, Iterable
+from typing import ClassVar, Any, Coroutine, Iterable
 import asyncio
 # import enum
 import logging
@@ -58,14 +58,22 @@ class LiveChannel:
     pass
 
 class JoystickTVConnector(WebSocketConnector):
+    NAME: ClassVar[str] = NAME
+
     live_channels: dict[str, LiveChannel]
 
-    def __init__(self, manager: ConnectorManager, name: Optional[str] = None, url: Optional[str] = None):
-        super().__init__(manager, name or NAME, url or URL)
+    def __init__(self, manager: ConnectorManager):
+        super().__init__(manager)
         self.live_channels = {}
 
+    def _get_url(self) -> str:
+        return URL
+
     def _create_connection(self) -> websockets.connect:
-        return websockets.connect(self.url, subprotocols=[SUBPROTOCOL_ACTIONABLE])
+        return websockets.connect(
+            self._get_url(),
+            subprotocols=[SUBPROTOCOL_ACTIONABLE],
+        )
 
     async def talk_receive(self, msg: ConnectorMessage) -> bool:
         if await super().talk_receive(msg):
@@ -360,6 +368,9 @@ class JoystickTVConnector(WebSocketConnector):
                         return
                 except Exception as e:
                     self.logger.exception("Failed to handle command %r: %s", cmd.key, e)
+                    await self.send_chat_reply(evmsg, (
+                        f"Error while handling {bot_command_fold} command. See logs for details"
+                    ))
 
                 if settings.point_cost > 0:
                     viewer.points = max(0, viewer.points - settings.point_cost)
@@ -570,8 +581,8 @@ class JoystickTVConnector(WebSocketConnector):
         channel_id: str,
         text: str,
         *,
-        mention: Optional[str] = None,
-        whisper: Optional[str] = None,
+        mention: str | None = None,
+        whisper: str | None = None,
     ):
         await self.talk("chat", {
             "text": text,
@@ -585,8 +596,8 @@ class JoystickTVConnector(WebSocketConnector):
         channel_ids: Iterable[str],
         text: str,
         *,
-        mention: Optional[str] = None,
-        whisper: Optional[str] = None,
+        mention: str | None = None,
+        whisper: str | None = None,
     ):
         await asyncio.gather(*[
             self.send_chat(
@@ -602,8 +613,8 @@ class JoystickTVConnector(WebSocketConnector):
         self,
         text: str,
         *,
-        mention: Optional[str] = None,
-        whisper: Optional[str] = None,
+        mention: str | None = None,
+        whisper: str | None = None,
     ):
         await self.send_channel_chats(
             self.live_channels.keys(),

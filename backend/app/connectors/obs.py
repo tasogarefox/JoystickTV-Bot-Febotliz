@@ -1,14 +1,12 @@
-from typing import Optional
+from typing import ClassVar
 from contextlib import asynccontextmanager
 import os
-import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from obswsc.client import ObsWsClient
 from obswsc.data import Request
 
 from ..utils.datetime import utcnow, utcmin
-from ..utils.asyncio import async_select
 from ..connector import ConnectorMessage, ConnectorManager, BaseConnector
 
 
@@ -30,24 +28,24 @@ CLIP_COOLDOWN = 30  # clip command cooldown in seconds
 # OBS Connector
 
 class OBSConnector(BaseConnector):
-    url: str
+    NAME: ClassVar[str] = NAME
+
     _client: ObsWsClient
     _last_clip: datetime = utcmin
 
-    def __init__(self, manager: ConnectorManager, name: Optional[str] = None, url: Optional[str] = None):
-        super().__init__(manager, name or NAME)
-        self.url = url or URL
-        self._client = self._create_client()
+    def __init__(self, manager: ConnectorManager):
+        super().__init__(manager)
+        self._client = self.create_client()
 
-    def _create_client(self) -> ObsWsClient:
-        return ObsWsClient(self.url, WS_PASSWORD)
+    def create_client(self) -> ObsWsClient:
+        return ObsWsClient(URL, WS_PASSWORD)
 
-    def _create_connection(self) -> ObsWsClient:
+    def create_connection(self) -> ObsWsClient:
         return self._client
 
     @asynccontextmanager
     async def connect(self):
-        async with self._create_connection() as client:
+        async with self.create_connection() as client:
             self._client = client
             yield
 

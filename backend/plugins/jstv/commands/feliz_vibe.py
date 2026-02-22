@@ -1,4 +1,4 @@
-from app.connectors.buttplug import VibeGroup, parse_vibes
+from app.connectors.buttplug import ButtplugConnector, VibeGroup, parse_vibes
 from app.events import jstv as evjstv
 from app.db.enums import CommandAccessLevel
 from app.handlers.jstv.commands import JSTVCommand, JSTVCommandSettings
@@ -10,9 +10,9 @@ from app.handlers.jstv.commands import JSTVCommand, JSTVCommandSettings
 class VibeCommand(JSTVCommand[evjstv.JSTVNewChatMessage]):
     key = "feliz.vibe.send"
     title = "Vibe"
-    description = "Send vibes using buttplug"
+    description = "Send vibes using Buttplug"
 
-    aliases = ()
+    aliases = ("vibe",)
 
     settings = JSTVCommandSettings(
         min_access_level=CommandAccessLevel.follower,
@@ -20,6 +20,14 @@ class VibeCommand(JSTVCommand[evjstv.JSTVNewChatMessage]):
 
     @classmethod
     async def handle(cls, ctx) -> bool:
+        buttplug = ctx.connector_manager.get(ButtplugConnector)
+
+        if not buttplug or not buttplug.is_connected or not buttplug.has_devices:
+            await ctx.connector.send_chat_reply(ctx.message, (
+                "No vibrators available"
+            ), mention=True)
+            return False
+
         vibestr = ctx.message.botCommandArg
         try:
             if not vibestr:
@@ -29,7 +37,7 @@ class VibeCommand(JSTVCommand[evjstv.JSTVNewChatMessage]):
 
         except ValueError as e:
             # Show the usage
-            errmsg = str(e) if isinstance(e, Exception) else ""
+            errmsg = f"{e} " if isinstance(e, Exception) else ""
             await ctx.connector.send_chat_reply(ctx.message, errmsg + (
                 # f"\nUsage: !{ctx.alias } [AMOUNT%] [TIMEs] [DEVICE] ..."
                 f"\nExamples: !{ctx.alias } 20% 5s"
@@ -40,7 +48,7 @@ class VibeCommand(JSTVCommand[evjstv.JSTVNewChatMessage]):
             ).strip(), mention=True)
             return False
 
-        await ctx.connector.talkto("Buttplug", "vibe", VibeGroup(
+        await ctx.connector.talkto(ButtplugConnector.NAME, "vibe", VibeGroup(
             frames=vibes,
             channel_id=ctx.message.channelId,
             username=ctx.message.actorname,

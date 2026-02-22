@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Any, Coroutine, Collection, Iterator, Iterable
+from typing import NamedTuple, ClassVar, Any, Coroutine, Collection, Iterator, Iterable
 from enum import IntEnum
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
@@ -120,7 +120,7 @@ def parse_vibes(vibestr: str) -> tuple["VibeFrame", ...]:
 
     # Parse the arguments
     # NOTE: Raise ValueError if the arguments are invalid
-    for arg in vibestr.split(" "):
+    for arg in vibestr.split():
         arg = arg.strip()
         if not arg:
             continue
@@ -320,12 +320,12 @@ class VibeFrame:
         if self.mode == VibeTargetMode.EXCLUSIVE and not self.targets:
             raise ValueError("Exclusive frame must have targets")
 
-    def __repr__(self) -> str:
+    def __str__(self) -> str:
         if self.mode == VibeTargetMode.OVERRIDE:
             return f"<{self.__class__.__name__} {self.duration}s to {self.value} override {self.targets}>"
         if self.mode == VibeTargetMode.EXCLUSIVE:
             return f"<{self.__class__.__name__} {self.duration}s to exclusive {self.targets}>"
-        return super().__repr__()
+        return super().__str__()
 
     def __bool__(self) -> bool:
         if self.mode == VibeTargetMode.EXCLUSIVE and not self.targets:
@@ -356,7 +356,7 @@ class VibeGroup:
     channel_id: str = ""
     username: str = ""
 
-    def __repr__(self) -> str:
+    def __str__(self) -> str:
         return f"<{self.__class__.__name__} {len(self.frames)} items for {self.get_duration()}s>"
 
     def __bool__(self) -> bool:
@@ -379,7 +379,8 @@ class VibeGroup:
 # Buttplug Connector
 
 class ButtplugConnector(BaseConnector):
-    url: str
+    NAME: ClassVar[str] = NAME
+
     client: Client
 
     _devices: set[str]
@@ -388,9 +389,8 @@ class ButtplugConnector(BaseConnector):
     _cur_vibe_group: VibeGroup | None = None
     _disabled_until: datetime
 
-    def __init__(self, manager: ConnectorManager, name: Optional[str] = None, url: Optional[str] = None):
-        super().__init__(manager, name or NAME)
-        self.url = url or URL
+    def __init__(self, manager: ConnectorManager):
+        super().__init__(manager)
         self.client = self._create_client()
         self._devices = set()
         self._vibe_queue = asyncio.Queue()
@@ -401,7 +401,7 @@ class ButtplugConnector(BaseConnector):
         return Client(logger.name, ProtocolSpec.v3)
 
     def _create_connection(self) -> WebsocketConnector:
-        return WebsocketConnector(self.url, logger=self.client.logger)
+        return WebsocketConnector(URL, logger=self.client.logger)
 
     @asynccontextmanager
     async def connect(self):
@@ -461,6 +461,13 @@ class ButtplugConnector(BaseConnector):
             self.logger.warning("Server not found in %s: %s", type(self).__name__, error)
         else:
             return await super().on_error(error)
+
+    @property
+    def has_devices(self) -> bool:
+        return bool(self.client.devices)
+
+    def _get_devices(self) -> set[str]:
+        return set(x.name for x in self.client.devices.values())
 
     async def main_loop(self):
         await async_select(
@@ -522,7 +529,7 @@ class ButtplugConnector(BaseConnector):
                 if group is not self._cur_vibe_group:
                     break
 
-                all_devices = set(x.name for x in self.client.devices.values())
+                all_devices = self._get_devices()
                 new_devices = vibe.resolve_devices(all_devices)
                 old_devices = devices - new_devices
                 devices = new_devices

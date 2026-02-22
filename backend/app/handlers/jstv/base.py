@@ -7,6 +7,7 @@ from app.utils import reqcls
 from ..base import BaseHandlerSettings, BaseHandlerContext, BaseHandler
 
 if TYPE_CHECKING:
+    from app.connector import ConnectorManager
     from app.connectors.joysticktv import JoystickTVConnector
 
 __all__ = [
@@ -43,6 +44,10 @@ class JSTVHandlerContext(
     connector: "JoystickTVConnector"
 
     message: MessageT
+
+    @property
+    def connector_manager(self) -> "ConnectorManager":
+        return self.connector.manager
 
 
 # ==============================================================================

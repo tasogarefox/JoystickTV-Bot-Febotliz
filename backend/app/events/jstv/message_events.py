@@ -3,7 +3,9 @@ from datetime import datetime
 
 from pydantic import Field, AliasChoices, field_validator
 
-from .shared import JSTVEvent, LoggedModel, JSTVIdentifier, ParsedJSON
+from app.utils.pydantic import ParsedJSON
+
+from .shared import JSTVEvent, JSTVLoggedModel, JSTVIdentifier
 from .errors import JSTVValidationError
 
 JSTVMessageT = TypeVar(
@@ -74,7 +76,7 @@ def evmsgisinstance(
 # ==============================================================================
 # Events
 
-class JSTVMessageEvent(JSTVEvent, LoggedModel, Generic[JSTVMessageT]):
+class JSTVMessageEvent(JSTVEvent, JSTVLoggedModel, Generic[JSTVMessageT]):
     identifier: ParsedJSON[JSTVIdentifier]
     message: JSTVMessageT
 
@@ -106,7 +108,7 @@ class JSTVMessageEvent(JSTVEvent, LoggedModel, Generic[JSTVMessageT]):
 # ==============================================================================
 # Data Models
 
-class JSTVMessage(LoggedModel):
+class JSTVMessage(JSTVLoggedModel):
     __subclsmap: ClassVar[dict[str, type["JSTVMessage"]]] = {}
 
     discriminator: ClassVar[str]
@@ -190,7 +192,7 @@ class JSTVBaseMessageWithMessageId(JSTVBaseMessageWithId):
     def messageId(self) -> str:
         return self.id
 
-class JSTVBaseUser(LoggedModel):
+class JSTVBaseUser(JSTVLoggedModel):
     slug: str
     username: str
     usernameColor: str | None = None
@@ -216,7 +218,7 @@ class JSTVBaseStreamLivespan(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.who
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         who: str
 
 class JSTVSteamStarted(JSTVBaseStreamLivespan):
@@ -240,7 +242,7 @@ class JSTVFollowed(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.who
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         who: str
         what: Literal["followed"]
 
@@ -249,7 +251,7 @@ class JSTVFollowerCountUpdated(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         number_of_followers: int
 
 class JSTVSubscribed(JSTVBaseMessageWithId):
@@ -261,7 +263,7 @@ class JSTVSubscribed(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.who
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         who: str
         what: Literal["subscribed"]
         how_much: int
@@ -271,7 +273,7 @@ class JSTVSubscriberCountUpdated(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         number_of_subscribers: int
 
 class JSTVTipped(JSTVBaseMessageWithId):
@@ -283,7 +285,7 @@ class JSTVTipped(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.who
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         who: str
         what: Literal["Tipped"]
         how_much: int
@@ -292,7 +294,7 @@ class JSTVTipped(JSTVBaseMessageWithId):
 class JSTVBaseTipMenuItemLockStateChanged(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         title: str
         amount: int
 
@@ -311,7 +313,7 @@ class JSTVTipGoalIncreased(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.by_user
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         by_user: str
         what: Literal["TipGoalIncreased"]
         amount: int
@@ -323,7 +325,7 @@ class JSTVTipGoalUpdated(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         title: str
         amount: int
 
@@ -336,7 +338,7 @@ class JSTVMilestoneCompleted(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.who
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         who: str
         what: Literal["MilestoneCompleted"]
         title: str
@@ -351,7 +353,7 @@ class JSTVTipGoalMet(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.who
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         who: str
         what: Literal["TipGoalMet"]
         title: str
@@ -366,7 +368,7 @@ class JSTVStreamDropin(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.origin
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         origin: str
         destination: str
         destination_username: str
@@ -381,7 +383,7 @@ class JSTVStreamDroppedIn(JSTVBaseMessageWithId):
     def actorname(self) -> str:
         return self.metadata.who
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         who: str
         what: Literal["dropped in"]
         number_of_viewers: int
@@ -391,13 +393,13 @@ class JSTVSettingsUpdated(JSTVBaseMessageWithId):
 
     metadata: ParsedJSON["Metadata"]
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         pass
 
 class JSTVBaseDeviceConnection(JSTVBaseMessageWithId):
     metadata: ParsedJSON["Metadata"]
 
-    class Metadata(LoggedModel):
+    class Metadata(JSTVLoggedModel):
         pass
 
 class JSTVDeviceConnected(JSTVBaseDeviceConnection):
@@ -421,7 +423,7 @@ class JSTVUserEnteredStream(JSTVBaseUserPresence):
 class JSTVUserLeftStream(JSTVBaseUserPresence):
     discriminator = "UserPresence:leave_stream"
 
-class JSTVChatEmote(LoggedModel):
+class JSTVChatEmote(JSTVLoggedModel):
     code: str
     signedUrl: str
     signedThumbnailUrl: str
