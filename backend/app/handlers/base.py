@@ -1,7 +1,9 @@
-from typing import Generic, TypeVar, ClassVar, Any, Generator
+from typing import Generic, TypeVar, ClassVar, Any, Generator, overload
 from dataclasses import dataclass
 
 from app.utils import reqcls
+
+T = TypeVar("T")
 
 SettingsT = TypeVar("SettingsT", bound="BaseHandlerSettings")
 ContextT = TypeVar("ContextT", bound="BaseHandlerContext")
@@ -10,12 +12,7 @@ ContextT = TypeVar("ContextT", bound="BaseHandlerContext")
 # ==============================================================================
 # Constants
 
-class Missing:
-    pass
-
-MISSING = Missing()
-
-MissingT = TypeVar("MissingT")
+MISSING = object()
 
 
 # ==============================================================================
@@ -78,8 +75,16 @@ class BaseHandler(
     def is_implemented(cls) -> bool:
         return reqcls.is_implemented(cls)
 
+    @overload
     @classmethod
-    def get_handler(cls, key: str, default: MissingT = MISSING) -> type["BaseHandler[ContextT, SettingsT]"] | MissingT:
+    def get_handler(cls, key: str) -> type["BaseHandler[ContextT, SettingsT]"]: ...
+
+    @overload
+    @classmethod
+    def get_handler(cls, key: str, default: T) -> type["BaseHandler[ContextT, SettingsT]"] | T: ...
+
+    @classmethod
+    def get_handler(cls, key: str, default: T = MISSING) -> type["BaseHandler[ContextT, SettingsT]"] | T:
         try:
             return cls._subclasses[key]
         except KeyError as e:
