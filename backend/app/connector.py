@@ -218,6 +218,9 @@ class BaseConnector(abc.ABC):
 
         manager.register(self)
 
+    def __bool__(self):
+        return self.is_connected
+
     @property
     def is_connected(self) -> bool:
         return self._connected

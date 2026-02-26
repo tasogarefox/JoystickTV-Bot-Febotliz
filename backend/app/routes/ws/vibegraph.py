@@ -76,11 +76,11 @@ clear_queue = False
 def encode_frame(frame: VibeFrame) -> dict[str, Any]:
     return {
         "duration": frame.duration * 1000,
-        "value": frame.value,
+        "value": frame.intensity,
         "mode": frame.mode.name,
         "targets": [{
             "device": target.device,
-            "value": target.value,
+            "value": target.intensity,
         } for target in frame.targets],
     }
 
@@ -228,7 +228,7 @@ async def ws_vibegraph_test_groups(ws: WebSocket) -> None:
                     for j in range(RANDOM_DEVICE_COUNT):
                         # smooth random walk
                         try:
-                            value = frames[-1].targets[j + 1].value
+                            value = frames[-1].targets[j + 1].intensity
                         except IndexError:
                             value = RANDOM_START_VALUE
                         value += random.uniform(-RANDOM_MAX_VALUE_DELTA, RANDOM_MAX_VALUE_DELTA)
@@ -283,7 +283,7 @@ async def ws_vibegraph_test_frames(ws: WebSocket) -> None:
                 for j in range(RANDOM_DEVICE_COUNT):
                     # smooth random walk
                     try:
-                        value = frames[-1].targets[j + 1].value
+                        value = frames[-1].targets[j + 1].intensity
                     except IndexError:
                         value = RANDOM_START_VALUE
                     value += random.uniform(-RANDOM_MAX_VALUE_DELTA, RANDOM_MAX_VALUE_DELTA)

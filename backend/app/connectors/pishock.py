@@ -27,6 +27,10 @@ semaphore = asyncio.Semaphore(5)  # Limit concurrent web requests
 # ==============================================================================
 # Config
 
+MAX_INTENSITY = 10
+MAX_DURATION = 2
+MAX_WARNING_DELAY = 60
+
 WEB_TIMEOUT = 10
 
 USERNAME = os.getenv("PISHOCK_USERNAME")
@@ -167,7 +171,7 @@ class ShockGroup:
     username: str = ""
 
     def __str__(self) -> str:
-        return f"<{self.__class__.__name__} {len(self.frames)} items for {self.get_duration()}s>"
+        return f"<{self.__class__.__name__} {len(self)} items for {self.get_duration()}s>"
 
     def __bool__(self) -> bool:
         return bool(self.frames)
@@ -182,13 +186,17 @@ class ShockGroup:
         return iter(self.frames)
 
     def get_duration(self) -> float:
-        return sum(item.duration for item in self.frames)
+        return sum(item.duration for item in self)
 
 
 # ==============================================================================
 # Functions
 
-def parse_shocks(vibestr: str) -> tuple["ShockFrame", ...]:
+def parse_shocks(
+    vibestr: str,
+    *,
+    limit: bool = True,
+) -> tuple["ShockFrame", ...]:
     NAME_MODE_MAP = {
         "vibrate": ShockMode.Vibrate,
         "vibe": ShockMode.Vibrate,
@@ -284,11 +292,20 @@ def parse_shocks(vibestr: str) -> tuple["ShockFrame", ...]:
         else:  # Invalid argument
             raise ValueError(f"Invalid argument: {arg}")
 
+    if mode is None:
+        mode = ShockMode.Shock
+
+    if duration is None:
+        duration = 1.0 if mode == ShockMode.Vibrate else 0.3
+
+    if intensity is None:
+        intensity = 100 if mode == ShockMode.Vibrate else 10
+
     frame = ShockFrame(
-        mode or ShockMode.Shock,
-        duration or 0.3,
-        intensity or random.randint(1, 10),
-        warning or 0,
+        mode,
+        min(duration, MAX_DURATION if limit else 20),
+        min(intensity, MAX_INTENSITY if limit else 100),
+        min(warning or 0, MAX_WARNING_DELAY),
     )
 
     return (frame,)
@@ -446,6 +463,12 @@ class PiShockConnector(WebSocketConnector):
 
     async def send_shock(self, cmd: ShockFrame) -> bool:
         # self.logger.info("Sending shock: %s", cmd)
+
+        if cmd.duration <= 0:
+            return False
+
+        if cmd.intensity <= 0 and cmd.mode in (ShockMode.Shock, ShockMode.Vibrate):
+            return False
 
         user_id = self.user_info.UserId if self.user_info else None
         if not user_id:

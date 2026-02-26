@@ -19,33 +19,65 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 # Config
 
-REWARD_INTERVAL = 300  # point reward interval in seconds
-REWARD_POINTS_PER_MINUTE = 2.0  # points per minute
+REWARD_INTERVAL: int = 300
+"""Interval in seconds to reward watch time and points"""
+REWARD_POINTS_PER_INTERVAL: int = 10
+"""
+Points per interval; should not be too small (e.g. below 10),
+since reward multipliers are rounded per interval and very
+small base values would reduce their effectiveness.
+"""
 
-REWARD_FOLLOWER_MULT = 1.0  # points multiplier for followers
-REWARD_SUBSCRIBER_MULT = 2.0  # points multiplier for subscribers
+REWARD_SUBSCRIBER_MULT: float = 2.0
+"""points multiplier for subscribers"""
 
-REWARD_CHATTED_ONCE = 100  # points for first-time chatters
-REWARD_CHATTED_FIXED = 0  # fixed points for each chat message
+REWARD_CHATTED_ONCE: int = 100
+"""points for first-time chatters"""
+REWARD_CHATTED_FIXED: int = 0
+"""fixed points for each chat message"""
 
-REWARD_FOLLOWED_ONCE = 100  # points for first-time followers
+REWARD_TIPPED_PER_TOKEN: float = 1.0
+"""points per token"""
+REWARD_TIPPED_FIXED: int = 0
+"""fixed points for each tips"""
 
-REWARD_SUBSCRIBED_ONCE = 0  # points for first-time subscribers
-REWARD_SUBSCRIBED_FIXED = 0  # fixed points for each subscribtion
+REWARD_RAIDED_PER_VIEWER: float = 0.0
+"""points per viewer for raid/drop-in"""
+REWARD_RAIDED_FIXED: int = 50
+"""points for raid/drop-in"""
 
-REWARD_TIPPED_PER_TOKEN = 0.0  # points per token
-REWARD_TIPPED_FIXED = 0  # fixed points for each tips
-
-REWARD_RAIDED_PER_VIEWER = 0.0  # points per viewer for drop-in
-REWARD_RAIDED_FIXED = 0  # points for drop-in
-
-MAX_STATUS_RECOVERY_TIME = REWARD_INTERVAL  # max channel/viewer online status recovery time in seconds
+MAX_STATUS_RECOVERY_TIME: int = REWARD_INTERVAL
+"""max channel/viewer online status recovery time in seconds"""
 
 
 # ==============================================================================
 # Interface
 
-async def reward_viewer(channel: Channel, viewer: Viewer) -> float:
+def adjust_viewer_points(
+    viewer: Viewer,
+    amount: int,
+    reason: str,
+) -> int:
+    """
+    Adjust points for a viewer.
+    """
+    # Exit if no points to adjust
+    if amount == 0:
+        return 0
+
+    # Update viewer
+    viewer.points += amount
+
+    logger.info((
+        "Adjusting points by %d for viewer #%d (user #%d, channel #%d); reason: %s"
+    ), amount, viewer.id, viewer.user_id, viewer.channel_id, reason)
+
+    return amount
+
+def reward_viewer_watch_time(
+    channel: Channel,
+    viewer: Viewer,
+) -> int:
     """
     Reward a viewer with points and watch time.
 
@@ -68,7 +100,7 @@ async def reward_viewer(channel: Channel, viewer: Viewer) -> float:
     time_start = max(
         channel.live_at,
         viewer.joined_at,
-        viewer.rewarded_at,
+        viewer.watch_time_rewarded_at,
     )
     time_end = min(
         now if viewer.is_present else viewer.left_at,
@@ -80,34 +112,40 @@ async def reward_viewer(channel: Channel, viewer: Viewer) -> float:
         return 0
 
     # Round down to the nearest REWARD_INTERVAL
-    intervals = int((time_end - time_start).total_seconds() // REWARD_INTERVAL)
-    time_delta = intervals * REWARD_INTERVAL
-    time_end = time_start + timedelta(seconds=time_delta)
+    intervals: int = int((time_end - time_start).total_seconds() / REWARD_INTERVAL)
+    seconds: int = int(intervals * REWARD_INTERVAL)
+    time_end = time_start + timedelta(seconds=seconds)
 
     # Return if no reward is due
-    if time_delta <= 0:
+    if seconds <= 0:
         return 0
 
-    # Calculate points (only complete intervals)
-    # NOTE: `time_delta` is already a multiple of REWARD_INTERVAL
-    points = time_delta / 60 * REWARD_POINTS_PER_MINUTE
+    # Determine reward multiplier
     mult = 1.0
 
-    # # TODO: Reenable when we track follower status
-    # if viewer.followed_at:
-    #     mult += REWARD_FOLLOWER_MULT
-
-    # # TODO: Reenable when we track subscriber status
-    # if viewer.subscribed_at:
-    #     mult += REWARD_SUBSCRIBER_MULT
+    if viewer.is_subscriber:
+        mult += max(0, REWARD_SUBSCRIBER_MULT - 1)
 
     # Calculate final point reward
-    points = max(0, points * mult)
+    # NOTE: Round per interval instead of after accumulation.
+    #       Otherwise frequent calls would discard fractional rewards
+    #       more often, giving slightly fewer points to more active viewers.
+    points_per_interval = round(REWARD_POINTS_PER_INTERVAL * mult)
+    points = max(0, intervals * points_per_interval)
 
     # Update viewer
-    viewer.rewarded_at = time_end
-    viewer.watch_time += int(time_delta)
-    viewer.points += points
+    fresh_stream = channel.is_fresh_stream(viewer.watch_time_rewarded_at)
+
+    viewer.watch_streak = 1 + (viewer.watch_streak if fresh_stream else 0)
+    viewer.cur_watch_time = seconds + (viewer.cur_watch_time if fresh_stream else 0)
+
+    viewer.total_watch_time += seconds
+    viewer.watch_time_rewarded_at = time_end
+
+    tmin, tsec = divmod(seconds, 60)
+    points = adjust_viewer_points(viewer, points, (
+        f"watched for {tmin:d}:{tsec:02d}"
+    ))
 
     return points
 
@@ -167,14 +205,15 @@ async def on_connected(db: AsyncSession) -> set[Channel]:
             continue
 
         # Untrusted state: force reconciliation
-        if is_live != channel.is_live:
+        if is_live is not None and is_live != channel.is_live:
             if is_live:  # channel.is_live == False
                 channel.set_live(now)
             else:  # channel.is_live == True
                 channel.force_offline(max(channel.live_at, cutoff_at))
 
         result = await db.execute(
-            select(Viewer).filter_by(channel_id=channel.id, is_present=True),
+            select(Viewer)
+            .filter_by(channel_id=channel.id, is_present=True),
         )
 
         viewers = result.scalars().all()
@@ -192,7 +231,7 @@ async def on_connected(db: AsyncSession) -> set[Channel]:
         # Mark all present viewers as offline and reward them up until `cutoff_at`
         for viewer in viewers:
             viewer.force_offline(max(viewer.joined_at, cutoff_at))
-            await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
+            reward_viewer_watch_time(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
 
     return channels
 
@@ -209,7 +248,7 @@ async def on_disconnected(db: AsyncSession) -> None:
         select(Viewer)
         .join(Viewer.channel)
         .options(joinedload(Viewer.channel))
-        .filter(Viewer.is_present == True, Channel.is_live == True),
+        .filter(Viewer.is_present.is_(True), Channel.is_live.is_(True)),
     )
 
     viewers = result.scalars().all()
@@ -223,10 +262,26 @@ async def on_disconnected(db: AsyncSession) -> None:
 
     for viewer in viewers:
         # NOTE: We rely on recovery to mark viewers as offline later, if needed
-        await reward_viewer(viewer.channel, viewer)  # WARNING: Channel and viewer must be up-to-date
+        reward_viewer_watch_time(viewer.channel, viewer)  # WARNING: Channel and viewer must be up-to-date
 
 async def on_server_message(db: AsyncSession) -> None:
     await jstv_db.update_last_event_received_time(db)
+
+async def on_viewer_interaction(
+    db: AsyncSession,
+    channel: Channel | str,
+    user: User | str,
+    viewer: Viewer | None,
+) -> None:
+    if not isinstance(viewer, Viewer):
+        viewer = await jstv_db.get_or_create_viewer(db, channel, user)
+
+    now = utcnow()
+
+    if viewer.first_seen_at is None:
+        viewer.first_seen_at = now
+
+    viewer.last_seen_at = now
 
 async def on_stream_started(db: AsyncSession, channel: Channel | str) -> None:
     """
@@ -269,7 +324,8 @@ async def on_stream_ended(db: AsyncSession, channel: Channel | str):
 
     # Reward all viewers still marked as present
     result = await db.execute(
-        select(Viewer).filter_by(channel_id=channel.id, is_present=True),
+        select(Viewer)
+        .filter_by(channel_id=channel.id, is_present=True),
     )
 
     viewers = result.scalars().all()
@@ -284,7 +340,7 @@ async def on_stream_ended(db: AsyncSession, channel: Channel | str):
     for viewer in viewers:
         # NOTE: We do NOT mark viewers offline here.
         #       Offline inference is handled by leave events or recovery.
-        await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
+        reward_viewer_watch_time(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
 
 async def on_enter_stream(
     db: AsyncSession,
@@ -301,8 +357,8 @@ async def on_enter_stream(
     Notes:
     - This event may arrive while the channel is offline.
     """
-    # channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    # username = user.username if isinstance(user, User) else user
+    if not isinstance(channel, Channel):
+        channel = await jstv_db.get_or_create_channel(db, channel)
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
@@ -329,8 +385,6 @@ async def on_leave_stream(
     if not isinstance(channel, Channel):
         channel = await jstv_db.get_or_create_channel(db, channel)
 
-    # username = user.username if isinstance(user, User) else user
-
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
 
@@ -346,41 +400,46 @@ async def on_leave_stream(
     viewer.leave()
 
     # Reward viewer
-    await reward_viewer(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
+    reward_viewer_watch_time(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
 
 async def on_new_chat(
     db: AsyncSession,
     channel: Channel | str,
     user: User | str,
     viewer: Viewer | None,
-) -> float:
-    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    username = user.username if isinstance(user, User) else user
+) -> int:
+    if not isinstance(channel, Channel):
+        channel = await jstv_db.get_or_create_channel(db, channel)
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
 
-    points = REWARD_CHATTED_ONCE if viewer.chatted_at is None else REWARD_CHATTED_FIXED
+    reason = "first time chatted" if viewer.last_chatted_at is None else "chatted"
+
+    points = REWARD_CHATTED_ONCE if viewer.last_chatted_at is None else REWARD_CHATTED_FIXED
     points = max(0, points)
 
-    if points > 0:
-        logger.info((
-            "User %s chatted in channel %s; rewarding %d points"
-        ), username, channel_id, points)
-
     # Update viewer
-    viewer.chatted_at = utcnow()
-    viewer.points += points
+    viewer.cur_chatted = channel.accumulate_per_stream(
+        viewer.cur_chatted, 1, viewer.last_chatted_at,
+    )
+
+    viewer.total_chatted += 1
+    viewer.last_chatted_at = utcnow()
+
+    points = adjust_viewer_points(viewer, points, reason)
 
     # Fail-safe for offline viewers
     if not viewer.is_present:
+        channel_id = channel.channel_id if isinstance(channel, Channel) else channel
+        username = user.username if isinstance(user, User) else user
         logger.info(
             "Fail-safe: Offline viewer %s chatted in channel %s - marking as online",
             username, channel_id,
         )
 
         # Force viewer online
-        viewer.join()
+        await on_enter_stream(db, channel, user, viewer)
 
     return points
 
@@ -389,82 +448,60 @@ async def on_followed(
     channel: Channel | str,
     user: User | str,
     viewer: Viewer | None,
-) -> float:
-    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    username = user.username if isinstance(user, User) else user
-
-    if not isinstance(viewer, Viewer):
-        viewer = await jstv_db.get_or_create_viewer(db, channel, user)
-
-    points = 0
-    points += REWARD_FOLLOWED_ONCE if viewer.followed_at is None else 0
-    points = max(0, points)
-
-    if points > 0:
-        logger.info((
-            "User %s followed channel %s; rewarding %d points"
-        ), username, channel_id, points)
-
-    # Update viewer
-    viewer.points += points
-    if viewer.followed_at is None:
-        viewer.followed_at = utcnow()
-
-    return points
+) -> int:
+    return 0
 
 async def on_subscribed(
     db: AsyncSession,
     channel: Channel | str,
     user: User | str,
     viewer: Viewer | None,
-) -> float:
-    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    username = user.username if isinstance(user, User) else user
-
+) -> int:
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
 
-    points = REWARD_SUBSCRIBED_FIXED
-    points += REWARD_SUBSCRIBED_ONCE if viewer.subscribed_at is None else 0
-    points = max(0, points)
-
-    if points > 0:
-        logger.info((
-            "User %s subscribed to channel %s; rewarding %d points"
-        ), username, channel_id, points)
-
-    # Update viewer
-    viewer.points += points
-    if viewer.subscribed_at is None:
-        viewer.subscribed_at = utcnow()
-
-    return points
+    viewer.is_subscriber = True
+    return 0
 
 async def on_tipped(
     db: AsyncSession,
     channel: Channel | str,
     user: User | str,
     viewer: Viewer | None,
-    amount: float,
-) -> float:
-    points = REWARD_TIPPED_FIXED
-    points += REWARD_TIPPED_PER_TOKEN * amount
+    amount: int,
+) -> int:
+    points = REWARD_TIPPED_FIXED + round(REWARD_TIPPED_PER_TOKEN * amount)
     points = max(0, points)
 
-    if points <= 0:
-        return 0
-
-    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    username = user.username if isinstance(user, User) else user
+    if not isinstance(channel, Channel):
+        channel = await jstv_db.get_or_create_channel(db, channel)
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
 
-    logger.info((
-        "User %s tipped %d tokens to channel %s; rewarding %d points"
-    ), username, amount, channel_id, points)
+    now = utcnow()
 
-    viewer.points += points
+    # Update viewer
+    viewer.cur_tipped = channel.accumulate_per_stream(
+        viewer.cur_tipped, amount, viewer.last_tipped_at,
+    )
+
+    viewer.total_tipped += amount
+    viewer.last_tipped_at = now
+
+    points = adjust_viewer_points(viewer, points, f"tipped {amount} tokens")
+
+    channel.total_tipped += amount
+    channel.last_tipped_at = now
+
+    # Update channel
+    channel.cur_tipped = channel.accumulate_per_stream(
+        channel.cur_tipped, amount, channel.last_tipped_at,
+    )
+
+    channel.total_tipped += amount
+    channel.last_tipped_at = now
+
     return points
 
 async def on_raided(
@@ -473,23 +510,24 @@ async def on_raided(
     user: User | str,
     viewer: Viewer | None,
     viewer_count: int,
-) -> float:
-    points = REWARD_RAIDED_FIXED
-    points += REWARD_RAIDED_PER_VIEWER * viewer_count
+) -> int:
+    points = REWARD_RAIDED_FIXED + round(REWARD_RAIDED_PER_VIEWER * viewer_count)
     points = max(0, points)
 
-    if points <= 0:
-        return 0
-
-    channel_id = channel.channel_id if isinstance(channel, Channel) else channel
-    username = user.username if isinstance(user, User) else user
+    if not isinstance(channel, Channel):
+        channel = await jstv_db.get_or_create_channel(db, channel)
 
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
 
-    logger.info((
-        "User %s raided channel %s with %d viewers; rewarding %d points"
-    ), username, channel_id, viewer_count, points)
+    fresh_stream = channel.is_fresh_stream(viewer.last_raided_at)
 
-    viewer.points += points
+    # Update viewer
+    viewer.last_raided_at = utcnow()
+
+    if fresh_stream:
+        points = adjust_viewer_points(viewer, points, (
+            f"raided with {viewer_count} viewers"
+        ))
+
     return points

@@ -1,5 +1,4 @@
 import sqlite3
-from contextlib import asynccontextmanager
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -19,6 +18,7 @@ engine = create_async_engine(
     future=True,
     poolclass=NullPool,  # Fix process not exiting when using AsyncEngine.begin() with SQLAlchemy>=2.0.38
 )
+
 AsyncSessionMaker = async_sessionmaker(
     autocommit=False,
     autoflush=False,

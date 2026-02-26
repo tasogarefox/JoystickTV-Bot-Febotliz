@@ -1,18 +1,38 @@
+from typing import TypeVar, Any, cast
 from datetime import datetime
 
 from sqlalchemy import (
     ForeignKey, Index, UniqueConstraint, CheckConstraint,
-    String, Integer, Float, Boolean,
+    String, Integer, Boolean, JSON,
+    or_, literal,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, RelationshipProperty, mapped_column, validates
 from sqlalchemy.ext.hybrid import hybrid_property
 
+from app.settings import NSFW_ENABLED
+from app.handlers import HandlerTags
 from app.utils.datetime import utcnow
 from app.utils.db import relationship
 
 from .database import Base
-from .types import Enum, AwareDateTime
-from .enums import CommandAccessLevel
+from .types import IntEnum, AwareDateTime
+from .enums import AccessLevel
+
+NumberT = TypeVar("NumberT", int, float)
+
+
+# ==============================================================================
+# Constants
+
+COMMAND_TAGS_DISABLED: frozenset[str] = frozenset(
+    tag for tag in {
+        HandlerTags.nsfw if not NSFW_ENABLED else None,
+    } if tag
+)
+"""
+Any `Command` whose `Command.definition.tags` contain any of these tag names
+should be treated as disabled, regardless of `Command.disabled`.
+"""
 
 
 # ==============================================================================
@@ -24,7 +44,7 @@ class ConnectionState(Base):
     """
     __tablename__ = "connection_state"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
 
     last_event_received_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
 
@@ -68,9 +88,18 @@ class Channel(Base):
     live_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
     offline_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
 
+    last_tipped_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    """Last time someone tipped the channel."""
+
+    total_tipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Total tipped amount for the channel (only while bot was running)."""
+
+    cur_tipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Tipped amount for the current stream."""
+
     owner: Mapped[User | None] = relationship("User", uselist=False, back_populates="channel")
     viewers: Mapped[list["Viewer"]] = relationship("Viewer", uselist=True, back_populates="channel")
-    access_token: Mapped["ChannelAccessToken"]  = relationship("ChannelAccessToken", uselist=False, back_populates="channel")
+    access_token: Mapped["ChannelAccessToken"]  = relationship("ChannelAccessToken", uselist=False, back_populates="channel", cascade="all, delete-orphan")
     commands: Mapped[list["Command"]] = relationship("Command", uselist=True, back_populates="channel")
 
     @hybrid_property
@@ -99,6 +128,38 @@ class Channel(Base):
         """Force the channel into offline state."""
         self.offline_at = timestamp or utcnow()
         self.live_at = min(self.live_at, self.offline_at)
+
+    def is_fresh_stream(self, last_at: datetime | None) -> bool:
+        """
+        Return True if an event has not happened since
+        the start of the current live stream.
+
+        NOTE: Does not check if the stream is live.
+        """
+        return not last_at or last_at < self.live_at
+
+    def accumulate_per_stream(
+        self,
+        prev: NumberT,
+        amount: NumberT,
+        last_at: datetime | None,
+    ) -> NumberT:
+        """
+        Accumulate per-stream values.
+
+        Adds `amount` to `prev` for the current stream,
+        resetting if it's the first event during this stream.
+        Returns `prev` unchanged if the channel is not live.
+        """
+        # Don't accumulate if not live
+        if not self.is_live:
+            return prev
+
+        # Reset if first time in current live stream
+        if self.is_fresh_stream(last_at):
+            return amount
+
+        return prev + amount
 
 class ChannelAccessToken(Base):
     """
@@ -165,6 +226,11 @@ class ChannelAccessToken(Base):
 class Viewer(Base):
     """
     Viewer data.
+
+    NOTE: State and timestamps can currently only be tracked while
+          the program is running, which means that it may be out of sync.
+          For that reason, many timestamps and the follow state are
+          not included in the database.
     """
     __tablename__ = "viewers"
     __table_args__ = (
@@ -176,19 +242,94 @@ class Viewer(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     channel_id: Mapped[int] = mapped_column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), index=True, nullable=False)
 
+    created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
     joined_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    """Timestamp when the current continuous presence began (first active session)."""
+
     left_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    rewarded_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)  # last watch time / points update
+    """Timestamp when the current continuous presence ended (last active session)."""
 
-    join_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # number of times viewer is present (for multiple devices)
+    join_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Number of times viewer is present (for multiple devices)"""
 
-    chatted_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
-    followed_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
-    subscribed_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
-    tipped_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    watch_time_rewarded_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    """Timestamp when the viewer was last rewarded for watch time."""
 
-    watch_time: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    points: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    first_seen_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    """First time of interaction on the channel (join, chat, tip, etc)."""
+
+    last_seen_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    """Last time of interaction on the channel (join, chat, tip, etc)."""
+
+    last_chatted_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    """Last time the viewer chatted in the channel."""
+
+    last_tipped_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    """Last time the viewer tipped the channel."""
+
+    last_raided_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    """Last time the viewer raided the channel."""
+
+    is_streamer: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    """True if the viewer is the channel's streamer."""
+
+    is_moderator: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    """True if the viewer is a moderator of the channel."""
+
+    is_subscriber: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    """True if the viewer is a subscriber of the channel."""
+
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    """
+    True if the viewer is verified.
+    Verified means they spent money on the site or are a content creator.
+    NOTE: Technically a user attribute, but included here for convenience.
+    """
+
+    is_content_creator: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    """
+    True if the viewer is a content creator. May or may not be the channel's streamer.
+    NOTE: Technically a user attribute, but included here for convenience.
+    """
+
+    total_watch_time: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Total watch time in seconds."""
+
+    cur_watch_time: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Watch time for the current stream."""
+
+    watch_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """How many streams the viewer has watched in a row."""
+
+    total_chatted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Total number of messages sent in the channel (only while bot was running)."""
+
+    cur_chatted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Number of messages sent during the current stream."""
+
+    total_tipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Total tipped amount for the channel (only while bot was running)."""
+
+    cur_tipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Tipped amount for the current stream."""
+
+    points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Channel-points the viewer currently has."""
+
+    @hybrid_property
+    def access_level(self) -> AccessLevel: # pyright: ignore[reportRedeclaration]
+        """Access level of the viewer."""
+        if self.is_streamer:
+            return AccessLevel.streamer
+        if self.is_moderator:
+            return AccessLevel.moderator
+        if self.is_subscriber:
+            return AccessLevel.subscriber
+        if self.is_verified:
+            return AccessLevel.verified
+        return AccessLevel.viewer
 
     @hybrid_property
     def is_present(self) -> bool: # pyright: ignore[reportRedeclaration]
@@ -197,17 +338,21 @@ class Viewer(Base):
 
     @is_present.expression # pyright: ignore[reportArgumentType]
     def is_present(cls):
+        """SQL expression for querying is_present."""
         return cls.join_count > 0
 
     def join(self, timestamp: datetime | None = None):
-        """Mark viewer as present on a new device/session."""
+        """Mark viewer as present on a new device/session; online if any sessions."""
+        if self.join_count == 0:
+            self.joined_at = timestamp or utcnow()
+
         self.join_count += 1
-        self.joined_at = timestamp or utcnow()
 
     def leave(self, timestamp: datetime | None = None):
         """Mark one device/session as left; fully offline if last session."""
         if self.join_count > 0:
             self.join_count -= 1
+
         if self.join_count == 0:
             self.left_at = timestamp or utcnow()
 
@@ -215,6 +360,8 @@ class Viewer(Base):
         """Force viewer fully offline, clearing any sessions."""
         self.join_count = 0
         self.left_at = timestamp or utcnow()
+
+        # Guard against invalid state by ensuring joined_at <= left_at
         self.joined_at = min(self.joined_at, self.left_at)
 
     user: Mapped[User] = relationship("User", uselist=False, back_populates="viewers")
@@ -224,16 +371,67 @@ class Viewer(Base):
 # ==============================================================================
 # Command Models
 
+class CommandDefinition(Base):
+    """
+    Global command definition (mirrored from plugins).
+    """
+    __tablename__ = "command_definitions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    tags: Mapped[list["CommandTag"]] = relationship("CommandTag", uselist=True, lazy="selectin", back_populates="definition", cascade="all, delete-orphan")
+    commands: Mapped[list["Command"]] = relationship("Command", uselist=True, back_populates="definition", cascade="all, delete-orphan")
+
+    @hybrid_property  # pyright: ignore[reportRedeclaration]
+    def disabled(self) -> bool:  # pyright: ignore[reportRedeclaration]
+        return any(x.name in COMMAND_TAGS_DISABLED for x in self.tags)
+
+    @disabled.expression
+    def disabled(cls):
+        if not COMMAND_TAGS_DISABLED:
+            return literal(False)
+
+        tags = cast(RelationshipProperty, cls.tags)  # typing fix
+
+        return or_(*[
+            tags.any(CommandTag.name == tag)
+            for tag in COMMAND_TAGS_DISABLED
+        ])
+
+class CommandTag(Base):
+    """
+    Per-command tag.
+    """
+    __tablename__ = "command_tags"
+    __table_args__ = (
+        Index("ix_command_tags_definition_id_name", "definition_id", "name"),
+        UniqueConstraint("definition_id", "name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
+    definition_id: Mapped[int] = mapped_column(Integer, ForeignKey("command_definitions.id", ondelete="CASCADE"), index=True, nullable=False)
+
+    name: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+
+    definition: Mapped[CommandDefinition] = relationship("CommandDefinition", uselist=False, back_populates="tags")
+
+    @validates("name")
+    def _normalize_name(self, key: str, value: str) -> str:
+        return value.casefold()
+
 class Command(Base):
     """
-    Channel command.
+    Per-channel command setting overrides.
     """
     __tablename__ = "commands"
     __table_args__ = (
-        Index("ix_commands_channel_id_key", "channel_id", "key"),
-        UniqueConstraint("channel_id", "key"),
+        Index("ix_commands_definition_id_channel_id", "definition_id", "channel_id"),
+        UniqueConstraint("definition_id", "channel_id"),
 
-        CheckConstraint("point_cost >= 0"),
+        CheckConstraint("base_cost >= 0"),
         CheckConstraint("channel_cooldown >= 0"),
         CheckConstraint("viewer_cooldown >= 0"),
         CheckConstraint("channel_limit >= 0"),
@@ -241,17 +439,19 @@ class Command(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
+    definition_id: Mapped[int] = mapped_column(Integer, ForeignKey("command_definitions.id", ondelete="CASCADE"), index=True, nullable=False)
     channel_id: Mapped[int] = mapped_column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), index=True, nullable=False)
 
-    key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     default_alias_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("command_aliases.id", ondelete="SET NULL"), nullable=True)
 
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    min_access_level: Mapped[CommandAccessLevel] = mapped_column(Enum(CommandAccessLevel), default=CommandAccessLevel.viewer.name, nullable=False)
+    min_access_level: Mapped[AccessLevel] = mapped_column(IntEnum(AccessLevel), default=AccessLevel.viewer, nullable=False)
 
-    point_cost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    base_cost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     channel_cooldown: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     channel_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -259,11 +459,18 @@ class Command(Base):
     viewer_cooldown: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     viewer_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    memory: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    definition: Mapped[CommandDefinition] = relationship("CommandDefinition", uselist=False, back_populates="commands")
     channel: Mapped[Channel] = relationship("Channel", uselist=False, back_populates="commands")
-    aliases: Mapped[list["CommandAlias"]] = relationship("CommandAlias", uselist=True, back_populates="command", foreign_keys="CommandAlias.command_id")
-    default_alias: Mapped["CommandAlias"] = relationship("CommandAlias", uselist=False, post_update=True, lazy="joined", foreign_keys=[default_alias_id])
-    channel_cooldowns: Mapped[list["ChannelCommandCooldown"]] = relationship("ChannelCommandCooldown", uselist=True, back_populates="command")
-    viewer_cooldowns: Mapped[list["ViewerCommandCooldown"]] = relationship("ViewerCommandCooldown", uselist=True, back_populates="command")
+    default_alias: Mapped["CommandAlias | None"]  = relationship("CommandAlias", uselist=False, post_update=True, lazy="joined", foreign_keys=[default_alias_id])
+    aliases: Mapped[list["CommandAlias"]] = relationship("CommandAlias", uselist=True, back_populates="command", foreign_keys="CommandAlias.command_id", cascade="all, delete-orphan")
+    channel_cooldowns: Mapped[list["ChannelCommandCooldown"]] = relationship("ChannelCommandCooldown", uselist=True, back_populates="command", cascade="all, delete-orphan")
+    viewer_cooldowns: Mapped[list["ViewerCommandCooldown"]] = relationship("ViewerCommandCooldown", uselist=True, back_populates="command", cascade="all, delete-orphan")
+
+    @hybrid_property
+    def aliases_default_first(self) -> list["CommandAlias"]:
+        return sorted(self.aliases, key=lambda x: x.id != self.default_alias_id)
 
 class CommandAlias(Base):
     """
@@ -282,24 +489,28 @@ class CommandAlias(Base):
 
     command: Mapped[Command] = relationship("Command", uselist=False, back_populates="aliases", foreign_keys=[command_id])
 
+    @validates("name")
+    def _normalize_name(self, key: str, value: str) -> str:
+        return value.casefold()
+
 class ChannelCommandCooldown(Base):
     """
-    Channel command cooldowns.
+    Channel command cooldown.
     """
     __tablename__ = "channel_command_cooldowns"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, nullable=False)
     command_id: Mapped[int] = mapped_column(Integer, ForeignKey("commands.id", ondelete="CASCADE"), unique=True, index=True, nullable=False)
 
-    used_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    count_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    count_current: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    total_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cur_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     command: Mapped[Command] = relationship("Command", uselist=False, back_populates="channel_cooldowns")
 
 class ViewerCommandCooldown(Base):
     """
-    Viewer command cooldowns.
+    Viewer command cooldown.
     """
     __tablename__ = "viewer_command_cooldowns"
     __table_args__ = (
@@ -311,9 +522,13 @@ class ViewerCommandCooldown(Base):
     command_id: Mapped[int] = mapped_column(Integer, ForeignKey("commands.id", ondelete="CASCADE"), index=True, nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
 
-    used_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    count_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    count_current: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    total_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cur_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    last_exec_alias: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_exec_argument: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    last_exec_cost: Mapped[int] = mapped_column(default=0, nullable=False)
 
     command: Mapped[Command] = relationship("Command", uselist=False, back_populates="viewer_cooldowns")
     user: Mapped[User] = relationship("User", uselist=False, back_populates="command_cooldowns")

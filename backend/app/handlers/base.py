@@ -1,16 +1,15 @@
-from typing import Generic, TypeVar, ClassVar, Any, Generator, overload
-from dataclasses import dataclass
+from typing import Generic, TypeVar, ClassVar, Any
+from types import MappingProxyType
+from dataclasses import dataclass, field
+import enum
 
 from app.utils import reqcls
 
 T = TypeVar("T")
-
+MemoryT = TypeVar("MemoryT")
+CacheT = TypeVar("CacheT")
 SettingsT = TypeVar("SettingsT", bound="BaseHandlerSettings")
 ContextT = TypeVar("ContextT", bound="BaseHandlerContext")
-
-
-# ==============================================================================
-# Constants
 
 MISSING = object()
 
@@ -27,8 +26,21 @@ class BaseHandlerSettings:
 # Handler Context
 
 @dataclass(frozen=True, slots=True)
-class BaseHandlerContext(Generic[SettingsT]):
+class BaseHandlerContext(
+    Generic[SettingsT, MemoryT, CacheT],
+):
     settings: SettingsT
+
+    memory: MemoryT | None = field(default=None, init=False)
+    cache: CacheT | None = field(default=None, init=False)
+
+    def set_cache(self, value: CacheT | None) -> None:
+        """Set cache value, bypassing freeze."""
+        object.__setattr__(self, "cache", value)
+
+    def set_memory(self, value: MemoryT | None) -> None:
+        """Set memory value, bypassing freeze."""
+        object.__setattr__(self, "memory", value)
 
 
 # ==============================================================================
@@ -37,15 +49,19 @@ class BaseHandlerContext(Generic[SettingsT]):
 class BaseHandler(
     reqcls.ReqCls,
     Generic[ContextT, SettingsT],
-    reqcls_check=False,
 ):
     __slots__ = ()
+    __reqcheck__ = False
 
-    _subclasses: ClassVar[dict[str, type["BaseHandler[Any, Any]"]]] = reqcls.required_field()
+    _subclasses: ClassVar[dict[str, type["BaseHandler[Any, Any]"]]]
+    handlers: ClassVar[MappingProxyType[str, type["BaseHandler[Any, Any]"]]]
 
     key: ClassVar[str] = reqcls.required_field()
     title: ClassVar[str] = reqcls.required_field()
     description: ClassVar[str] = reqcls.required_field()
+    disabled: ClassVar[bool] = False
+    priority: ClassVar[int] = 100
+    tags: ClassVar[frozenset[str]] = frozenset()
 
     settings: SettingsT = reqcls.required_field()
 
@@ -56,45 +72,37 @@ class BaseHandler(
     def __init_subclass__(cls):
         super().__init_subclass__()
 
+        # Skip if not implemented
         if not reqcls.is_implemented(cls):
             cls._subclasses = {}
+            cls.handlers = MappingProxyType(cls._subclasses)
             return
 
+        # Ensure key has been overridden
         key: str | None = cls.__dict__.get("key")
-        if key is None:
-            return
 
+        if not key:
+            raise TypeError(f"Missing key override in {cls.__name__}")
+
+        key_fold = key.casefold()
         subclasses = cls._subclasses
 
-        if key in subclasses:
-            raise TypeError(f"Same key in {cls.__name__} and {subclasses[key].__name__}: {key}")
+        # Ensure key is unique
+        other = subclasses.get(key_fold)
+        if other is not None:
+            raise TypeError(f"Same key in {cls.__name__} and {other.__name__}: {key}")
 
-        subclasses[key] = cls
-
-    @classmethod
-    def is_implemented(cls) -> bool:
-        return reqcls.is_implemented(cls)
-
-    @overload
-    @classmethod
-    def get_handler(cls, key: str) -> type["BaseHandler[ContextT, SettingsT]"]: ...
-
-    @overload
-    @classmethod
-    def get_handler(cls, key: str, default: T) -> type["BaseHandler[ContextT, SettingsT]"] | T: ...
+        subclasses[key_fold] = cls
 
     @classmethod
-    def get_handler(cls, key: str, default: T = MISSING) -> type["BaseHandler[ContextT, SettingsT]"] | T:
-        try:
-            return cls._subclasses[key]
-        except KeyError as e:
-            if default is MISSING:
-                raise e
-            return default
+    async def prepare(cls, ctx: ContextT) -> bool:
+        """
+        Prepare to handle an event or message.
 
-    @classmethod
-    def iter_handlers(cls) -> Generator[tuple[str, type["BaseHandler"]], None, None]:
-        yield from cls._subclasses.items()
+        :return: True if the event or message should be handled; False otherwise.
+        :rtype: bool
+        """
+        return True
 
     @classmethod
     @reqcls.required_method

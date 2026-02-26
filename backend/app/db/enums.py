@@ -4,12 +4,18 @@ import enum
 # ==============================================================================
 # Enums
 
-class CommandAccessLevel(enum.IntEnum):
+class AccessLevel(enum.IntEnum):
+    """
+    Command access level.
+
+    NOTE: Some values are disabled because they cannot
+          currently be tracked properly.
+    """
     viewer = 0
     verified = 10
-    follower = 20
-    verified_follower = 30
+    # follower = 20
+    # verified_follower = 30
     subscriber = 50
-    vip = 70
+    # vip = 70
     moderator = 80
-    broadcaster = 100
+    streamer = 100

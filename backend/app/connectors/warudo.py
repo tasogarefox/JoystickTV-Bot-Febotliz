@@ -169,11 +169,10 @@ class WarudoConnector(WebSocketConnector):
         if await super().talk_receive(msg):
             return True
 
-        if msg.action == "action":
-            await self.sendnow(msg.data)
-            return True
-
         return False
 
     async def on_message(self, data: dict[Any, Any]):
         self.logger.info("Received: %s", data)
+
+    async def send_action(self, action: str, data: Any = None) -> None:
+        await self.sendnow({"action": action, "data": data})

@@ -29,7 +29,7 @@ class Bot(ConnectorManager):
         # Create and register connectors
         JoystickTVConnector(self)
         WarudoConnector(self)
-        StreamerBotConnector(self)
+        # StreamerBotConnector(self)
         OBSConnector(self)
         ButtplugConnector(self)
         PiShockConnector(self)

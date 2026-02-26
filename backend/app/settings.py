@@ -30,6 +30,8 @@ APP_SLUG = os.getenv("APP_SLUG", "febotliz")
 PRODUCTION = getenv_bool("PRODUCTION", "0")
 DEBUG = getenv_bool("DEBUG", "0")
 FRONTEND_BASE_URL = "/app/"
+NSFW_ENABLED = getenv_bool("NSFW_ENABLED", "0")
+POINTS_NAME = os.getenv("POINTS_NAME") or "Points"
 
 # Server settings
 SERVER_HOST = os.getenv("SERVER_HOST", "http://localhost")

@@ -1,14 +1,16 @@
-from typing import TYPE_CHECKING, Generic, TypeVar, ClassVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 from dataclasses import dataclass
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.events import jstv as evjstv
-from app.utils import reqcls
 
 from ..base import BaseHandlerSettings, BaseHandlerContext, BaseHandler
 
 if TYPE_CHECKING:
-    from app.connector import ConnectorManager
+    from app.connector import ConnectorManager, BaseConnector
     from app.connectors.joysticktv import JoystickTVConnector
+    from app.db.models import Channel, User, Viewer
 
 __all__ = [
     "JSTVHandlerSettings",
@@ -16,6 +18,8 @@ __all__ = [
     "JSTVBaseHandler",
 ]
 
+MemoryT = TypeVar("MemoryT")
+CacheT = TypeVar("CacheT")
 ContextT = TypeVar("ContextT", bound="JSTVHandlerContext")
 SettingsT = TypeVar("SettingsT", bound="JSTVHandlerSettings")
 MessageT = TypeVar("MessageT", bound=evjstv.JSTVMessage)
@@ -38,16 +42,49 @@ class JSTVHandlerSettings(BaseHandlerSettings):
 
 @dataclass(frozen=True, slots=True)
 class JSTVHandlerContext(
-    BaseHandlerContext[SettingsT],
-    Generic[MessageT, SettingsT],
+    BaseHandlerContext[SettingsT, MemoryT, CacheT],
+    Generic[MessageT, SettingsT, MemoryT, CacheT],
 ):
-    connector: "JoystickTVConnector"
+    connector: "BaseConnector"
 
-    message: MessageT
+    message: MessageT | None
+
+    db: AsyncSession
+    channel: "Channel"
+    user: "User | None"
+    viewer: "Viewer | None"
 
     @property
     def connector_manager(self) -> "ConnectorManager":
         return self.connector.manager
+
+    @property
+    def jstv_connector(self) -> "JoystickTVConnector | None":
+        from app.connectors.joysticktv import JoystickTVConnector
+        return self.connector_manager.get(JoystickTVConnector)
+
+    async def reply(
+        self,
+        text: str,
+        *,
+        mention: bool = False,
+        whisper: bool = False,
+    ) -> bool:
+        if self.channel is None or self.user is None:
+            return False
+
+        jstv = self.jstv_connector
+        if jstv is None:
+            return False
+
+        await jstv.send_chat(
+            self.channel.channel_id,
+            text,
+            mention=self.user.username if mention else None,
+            whisper=self.user.username if whisper else None,
+        )
+
+        return True
 
 
 # ==============================================================================
@@ -55,9 +92,6 @@ class JSTVHandlerContext(
 
 class JSTVBaseHandler(
     BaseHandler[ContextT, SettingsT],
-    Generic[MessageT, ContextT, SettingsT],
-    reqcls_check=False,
 ):
     __slots__ = ()
-
-    msgtypes: ClassVar[tuple[type[evjstv.JSTVMessage], ...]] = reqcls.required_field()
+    __reqcheck__ = False

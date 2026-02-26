@@ -1,21 +1,21 @@
 """
-ReqCls — Required-Class Utility
+ReqCls - Required-Class Utility
 
-This module provides a lightweight metaclass `ReqClsMeta` for defining
-classes with required class attributes and classmethods, without
-forcing instantiation.
+This module provides a lightweight superclass for defining
+classes with required class attributes and class methods,
+without the need for instantiation.
 
 Key features:
-
 - `required_field()` marks a class attribute as required in subclasses.
-- `required_method` decorates a classmethod that must be implemented
+- `required_method` decorates a class method that must be implemented
   in subclasses.
-- `ReqClsMeta` enforces that all required attributes and methods are
-  implemented when `reqcls_check=True`.
-- `ReqCls` is a convenient base class using this metaclass.
+- `ReqCls` enforces that all required attributes and methods are
+  implemented unless the current subclass explicitly sets
+  `__reqcheck__ = False`.
 
 Example:
-    class Foo(ReqCls, reqcls_check=False):
+    class Foo(ReqCls):
+        __reqcheck__ = False
         foo_attr: ClassVar[str] = required_field()
 
         @classmethod
@@ -35,32 +35,36 @@ Example:
         '''Does NOT implement required items, will raise.'''
 """
 
-from typing import Any
+from typing import NamedTuple, ClassVar, Any
 
 __all__ = (
     "ReqCls",
-    "ReqClsMeta",
     "required_field",
     "required_method",
-    "is_implemented",
+
+    "get_reqdata",
     "is_required",
+    "is_missing",
+    "is_implemented",
 )
 
 
 # ==============================================================================
-# Helpers
+# Public Interface
 
-def is_implemented(cls: type) -> bool:
-    try:
-        return cls.__reqcls_implemented__
-    except AttributeError as e:
-        raise TypeError(f"{cls.__name__} is not like ReqCls") from e
+def get_reqdata(cls: type["ReqCls"]) -> "ReqData":
+    return ReqData.init(cls)
 
-def is_required(cls: type, attr: str) -> bool:
-    try:
-        return attr in cls.__reqcls_attributes__ or attr in cls.__reqcls_methods__
-    except AttributeError as e:
-        raise TypeError(f"{cls.__name__} is not like ReqCls") from e
+def is_implemented(cls: type["ReqCls"]) -> bool:
+    return get_reqdata(cls).is_implemented
+
+def is_required(cls: type["ReqCls"], attr: str) -> bool:
+    reqdata = get_reqdata(cls)
+    return attr in reqdata.required_attrs or attr in reqdata.required_methods
+
+def is_missing(cls: type["ReqCls"], attr: str) -> bool:
+    reqdata = get_reqdata(cls)
+    return attr in reqdata.missing_attrs or attr in reqdata.missing_methods
 
 
 # ==============================================================================
@@ -82,85 +86,99 @@ def required_field() -> Any:
 
 
 # ==============================================================================
-# Metaclass
+# Required Class
 
-class ReqClsMeta(type):
+class ReqCls:
     __slots__ = ()
 
-    def __new__(
-        mcls,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: dict[str, Any],
-        *,
-        reqcls_check: bool = True,
-    ):
+    __reqcheck__: ClassVar[bool] = True
+    __reqdata__: ClassVar["ReqData | None"] = None
+
+    def __init_subclass__(cls):
+        super().__init_subclass__()
+        ReqData.init(cls)
+
+
+# ==============================================================================
+# Required Data
+
+class ReqData(NamedTuple):
+    required_attrs: frozenset[str]
+    required_methods: frozenset[str]
+
+    missing_attrs: frozenset[str]
+    missing_methods: frozenset[str]
+
+    @property
+    def is_implemented(self) -> bool:
+        return not self.missing_attrs and not self.missing_methods
+
+    @classmethod
+    def init(cls, rqcls: type[ReqCls]) -> "ReqData":
+        rqdata = rqcls.__dict__.get("__reqdata__")
+        if rqdata is not None:
+            return rqdata
+
+        # Gather inherited ReqData instances
+        rqdatbases: list[ReqData] = []
+        for base in rqcls.__bases__:
+            if base is not ReqCls and issubclass(base, ReqCls):
+                rqbase = base.__reqdata__
+                if rqbase is None:
+                    raise TypeError(
+                        f"{base.__name__}.__reqdata__ has not been initialized"
+                    )
+
+                rqdatbases.append(rqbase)
+
         # Determine required class attributes and methods
-        req_attrs = set()
-        req_methods = set()
-        for key, value in namespace.items():
+        required_attrs = set()
+        required_methods = set()
+        for key, value in rqcls.__dict__.items():
             if isinstance(value, RequiredField):
-                req_attrs.add(key)
+                required_attrs.add(key)
 
             elif getattr(value, "__isabstractmethod__", False):
-                req_methods.add(key)
+                required_methods.add(key)
 
-        # Remove RequiredField instances from namespace
-        for key in req_attrs:
-            del namespace[key]
+        # Remove RequiredField instances
+        for key in required_attrs:
+            delattr(rqcls, key)
 
         # Add inherited required class attributes and methods
-        req_attrs.update(*(
-            getattr(b, "__reqcls_attributes__", set())
-            for b in bases
-        ))
-        req_methods.update(*(
-            getattr(b, "__reqcls_methods__", set())
-            for b in bases
-        ))
+        required_attrs.update(*(x.required_attrs for x in rqdatbases))
+        required_methods.update(*(x.required_methods for x in rqdatbases))
 
-        # Store class attributes
-        namespace["__reqcls_attributes__"] = frozenset(req_attrs)
-        namespace["__reqcls_methods__"] = frozenset(req_methods)
-        namespace["__reqcls_implemented__"] = False
+        # Determine missing class attributes
+        missing_attrs = set()
+        for iname in required_attrs:
+            if not hasattr(rqcls, iname):
+                missing_attrs.add(iname)
 
-        # Create class
-        cls: Any | ReqCls = super().__new__(mcls, name, bases, namespace)
+        # Determine missing class methods
+        missing_methods = set()
+        for iname in required_methods:
+            method = getattr(rqcls, iname, None)
+            if method is None or getattr(method, "__isabstractmethod__", False):
+                missing_methods.add(iname)
 
-        if reqcls_check:
-            # Check required class attributes and methods
-            missing_attrs = set()
-            for iname in req_attrs:
-                if not hasattr(cls, iname):
-                    missing_attrs.add(iname)
+        # Instantiate and store ReqData
+        rqdata = rqcls.__reqdata__ = cls(
+            required_attrs=frozenset(required_attrs),
+            required_methods=frozenset(required_methods),
+            missing_attrs=frozenset(missing_attrs),
+            missing_methods=frozenset(missing_methods),
+        )
 
-            missing_methods = set()
-            for iname in req_methods:
-                method = getattr(cls, iname, None)
-                if method is None or getattr(method, "__isabstractmethod__", False):
-                    missing_methods.add(iname)
-
+        # Enforce implementation
+        if rqcls.__dict__.get("__reqcheck__", True):
             if missing_attrs or missing_methods:
                 missing_str = ", ".join(sorted(missing_attrs | missing_methods))
                 raise TypeError(
-                    f"{name} missing"
+                    f"{rqcls.__name__} missing"
                     f" {len(missing_attrs)} required class attributes"
                     f" and {len(missing_methods)} required class methods"
                     f": {missing_str}"
                 )
 
-            # Mark class as implemented
-            cls.__reqcls_implemented__ = True
-
-        return cls
-
-
-# ==============================================================================
-# Required Class
-
-class ReqCls(metaclass=ReqClsMeta):
-    __slots__ = ()
-
-    __reqcls_attributes__: frozenset[str]
-    __reqcls_methods__: frozenset[str]
-    __reqcls_implemented__: bool
+        return rqdata

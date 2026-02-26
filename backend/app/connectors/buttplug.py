@@ -20,6 +20,8 @@ from app.connector import ConnectorMessage, ConnectorManager, BaseConnector
 # ==============================================================================
 # Config
 
+MAX_PARSED_DURATION = 180
+
 CHAT_VIBE_INFO = False
 VIBE_CHECK_INTERVAL = 0.1
 
@@ -33,7 +35,11 @@ URL = WS_HOST
 # ==============================================================================
 # Functions
 
-def parse_vibes(vibestr: str) -> tuple["VibeFrame", ...]:
+def parse_vibes(
+    vibestr: str,
+    *,
+    limit: bool = True,
+) -> tuple["VibeFrame", ...]:
     sections: list[tuple[VibeFrame, ...]] = []
     cur_section: list[VibeFrame] = []
 
@@ -56,7 +62,7 @@ def parse_vibes(vibestr: str) -> tuple["VibeFrame", ...]:
             return False
 
         # Merge the current action values with the previous
-        cur_start_value = abs(cur_start_value) if cur_start_value is not None else prev_action.value
+        cur_start_value = abs(cur_start_value) if cur_start_value is not None else prev_action.intensity
         cur_stop_value = abs(cur_stop_value) if cur_stop_value is not None else cur_start_value
         cur_duration = abs(cur_duration) if cur_duration is not None else prev_action.duration
         cur_devices = cur_devices if cur_devices is not None else list(prev_action.get_devices())
@@ -241,7 +247,7 @@ def parse_vibes(vibestr: str) -> tuple["VibeFrame", ...]:
                     if itime < frame.duration:
                         frame = VibeFrame(
                             duration=itime,
-                            value=frame.value,
+                            intensity=frame.intensity,
                             targets=frame.targets,
                             mode=frame.mode,
                         )
@@ -267,8 +273,38 @@ def parse_vibes(vibestr: str) -> tuple["VibeFrame", ...]:
     if not sections:
         return tuple()
 
-    # Flatten and return
-    return tuple(v for s in sections for v in s)
+    # Flatten, limit duration and return
+    vibes = []
+    total_duration: float = 0
+    stop = False
+    for section in sections:
+        for action in section:
+            if action.duration <= 0:
+                continue
+
+            total_duration += action.duration
+
+            if limit:
+                overflow_duration = total_duration - MAX_PARSED_DURATION
+                if overflow_duration > 0:
+                    stop = True
+                    action = VibeFrame(
+                        duration=action.duration - overflow_duration,
+                        intensity=action.intensity,
+                        targets=action.targets,
+                        mode=action.mode,
+                    )
+
+            if action.duration > 0:
+                vibes.append(action)
+
+            if stop:
+                break
+
+        if stop:
+            break
+
+    return tuple(vibes)
 
 
 # ==============================================================================
@@ -280,12 +316,12 @@ class VibeTargetMode(IntEnum):
 
 class VibeTarget(NamedTuple):
     device: str
-    value: float
+    intensity: float
 
 @dataclass(frozen=True, slots=True)
 class VibeFrame:
     duration: float = 30.0
-    value: float = 0.5
+    intensity: float = 0.5
     targets: tuple[VibeTarget, ...] = tuple()
     mode: VibeTargetMode = VibeTargetMode.OVERRIDE
 
@@ -293,12 +329,12 @@ class VibeFrame:
     def new_override(
         cls,
         duration: float = duration,
-        value: float = value,
+        intensity: float = intensity,
         targets: Iterable[VibeTarget] = tuple(),
     ):
         return cls(
             duration,
-            value,
+            intensity,
             tuple(targets),
             VibeTargetMode.OVERRIDE,
         )
@@ -322,7 +358,7 @@ class VibeFrame:
 
     def __str__(self) -> str:
         if self.mode == VibeTargetMode.OVERRIDE:
-            return f"<{self.__class__.__name__} {self.duration}s to {self.value} override {self.targets}>"
+            return f"<{self.__class__.__name__} {self.duration}s to {self.intensity} override {self.targets}>"
         if self.mode == VibeTargetMode.EXCLUSIVE:
             return f"<{self.__class__.__name__} {self.duration}s to exclusive {self.targets}>"
         return super().__str__()
@@ -353,11 +389,11 @@ class VibeFrame:
 class VibeGroup:
     frames: tuple[VibeFrame, ...]
 
-    channel_id: str = ""
-    username: str = ""
+    channel_id: str | None = None
+    username: str | None = None
 
     def __str__(self) -> str:
-        return f"<{self.__class__.__name__} {len(self.frames)} items for {self.get_duration()}s>"
+        return f"<{self.__class__.__name__} {len(self)} items for {self.get_duration()}s>"
 
     def __bool__(self) -> bool:
         return bool(self.frames)
@@ -372,7 +408,7 @@ class VibeGroup:
         return iter(self.frames)
 
     def get_duration(self) -> float:
-        return sum(item.duration for item in self.frames)
+        return sum(item.duration for item in self)
 
 
 # ==============================================================================
@@ -387,14 +423,14 @@ class ButtplugConnector(BaseConnector):
 
     _vibe_queue: asyncio.Queue[VibeGroup]
     _cur_vibe_group: VibeGroup | None = None
-    _disabled_until: datetime
+    _delayed_until: datetime
 
     def __init__(self, manager: ConnectorManager):
         super().__init__(manager)
         self.client = self._create_client()
         self._devices = set()
         self._vibe_queue = asyncio.Queue()
-        self._disabled_until = datetime.now()
+        self._delayed_until = datetime.now()
 
     def _create_client(self) -> Client:
         logger = self.logger.getChild("Client")
@@ -423,32 +459,17 @@ class ButtplugConnector(BaseConnector):
         self.logger.info("Connector message received: %r, data: %s", msg, msg.data)
 
         if msg.action in ["clear", "stop"]:
-            await self._clear()
+            await self.clear()
             return True
 
-        elif msg.action == "disable":
+        elif msg.action in ["delay", "disable"]:
             if isinstance(msg.data, (int, float)):
-                now = datetime.now()
-                until = now + timedelta(seconds=msg.data)
-                self._disabled_until = max(self._disabled_until, until)
-
-                group = self._cur_vibe_group
-                if group:
-                    delay = (until - now).total_seconds()
-                    log_msg = f"Vibe: disabled for {delay:.2f} seconds"
-                    self.logger.info(log_msg)
-                    await self.talkto("JoystickTV", "chat", {
-                        "text": log_msg,
-                        "channelId": group.channel_id,
-                    })
-
+                await self.delay(msg.data)
             return True
 
         elif msg.action == "vibe":
-            if isinstance(msg.data, VibeFrame):
-                await self._vibe_queue.put(VibeGroup((msg.data,)))
-            elif isinstance(msg.data, VibeGroup):
-                await self._vibe_queue.put(msg.data)
+            if isinstance(msg.data, (VibeGroup, VibeFrame)):
+                await self.enqueue(msg.data)
             return True
 
         return False
@@ -465,6 +486,36 @@ class ButtplugConnector(BaseConnector):
     @property
     def has_devices(self) -> bool:
         return bool(self.client.devices)
+
+    async def enqueue(self, vibe: VibeGroup | VibeFrame) -> None:
+        group = vibe if isinstance(vibe, VibeGroup) else VibeGroup((vibe,))
+        await self._vibe_queue.put(group)
+
+    async def clear(self):
+        try:
+            while True:
+                self._vibe_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+
+        self._cur_vibe_group = None
+
+        await self._vibe([x.name for x in self.client.devices.values()], 0)
+
+    async def delay(self, seconds: float) -> None:
+        now = datetime.now()
+        until = now + timedelta(seconds=seconds)
+        self._delayed_until = max(self._delayed_until, until)
+
+        group = self._cur_vibe_group
+        if group:
+            delay = (until - now).total_seconds()
+            log_msg = f"Vibe: disabled for {delay:.1f} seconds"
+            self.logger.info(log_msg)
+            await self.talkto("JoystickTV", "chat", {
+                "text": log_msg,
+                "channelId": group.channel_id or "",
+            })
 
     def _get_devices(self) -> set[str]:
         return set(x.name for x in self.client.devices.values())
@@ -543,11 +594,11 @@ class ButtplugConnector(BaseConnector):
                     await self.talkto("JoystickTV", "chat", {
                         "text": (
                             f"Vibe: {len(group)} items for {round(group.get_duration())}s"
-                            + (f" at {round(vibe.value*100)}%" if len(group) == 1 else "")
-                            + f" by {group.username}"
+                            + (f" at {round(vibe.intensity*100)}%" if len(group) == 1 else "")
+                            + f" by {group.username or 'unknown'}"
                             + f"; queued: {self._vibe_queue.qsize()}"
                         ),
-                        "channelId": group.channel_id,
+                        "channelId": group.channel_id or "",
                     })
 
                 await asyncio.gather(
@@ -576,7 +627,7 @@ class ButtplugConnector(BaseConnector):
                 self.logger.info(msg)
                 tasks.append(self.talkto("JoystickTV", "chat", {
                     "text": msg,
-                    "channelId": group.channel_id,
+                    "channelId": group.channel_id or "",
                 }))
 
             await asyncio.gather(*tasks)
@@ -606,8 +657,8 @@ class ButtplugConnector(BaseConnector):
             if vibegraph.config.paused:
                 delay = VIBE_CHECK_INTERVAL
 
-            elif self._disabled_until > now:
-                total_delay = (self._disabled_until - now).total_seconds()
+            elif self._delayed_until > now:
+                total_delay = (self._delayed_until - now).total_seconds()
                 delay = min(total_delay, VIBE_CHECK_INTERVAL)
 
                 if vibe is not None and active:
@@ -623,7 +674,7 @@ class ButtplugConnector(BaseConnector):
                     if not active or new_mult != mult:
                         active = True
                         mult = new_mult
-                        tasks.append(self._vibe(devices, vibe.value * mult))
+                        tasks.append(self._vibe(devices, vibe.intensity * mult))
 
             if delay <= 0:
                 break
@@ -638,7 +689,7 @@ class ButtplugConnector(BaseConnector):
 
             if vibegraph.clear_queue:
                 vibegraph.clear_queue = False
-                await self._clear()
+                await self.clear()
                 break
 
         return shutdown
@@ -672,14 +723,3 @@ class ButtplugConnector(BaseConnector):
                     await actuator.command(amount)
                 except DisconnectedError:
                     pass
-
-    async def _clear(self):
-        try:
-            while True:
-                self._vibe_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
-
-        self._cur_vibe_group = None
-
-        await self._vibe([x.name for x in self.client.devices.values()], 0)

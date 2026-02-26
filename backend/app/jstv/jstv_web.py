@@ -127,3 +127,30 @@ async def fetch_stream_settings(access_token: str) -> StreamSettings:
     except httpx.RequestError as e:
         logger.error("Network error while fetching stream settings: %s", e)
         raise JSTVWebError("Network error while fetching stream settings") from e
+
+async def send_test_event(event: str, data: str) -> None:
+    payload = {
+        "sample": {
+            "event": event,
+            "data": data,
+        },
+    }
+
+    headers = {
+        "Authorization": f"Basic {ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    url = f"{HOST}/echo"
+
+    try:
+        async with semaphore, httpx.AsyncClient(timeout=WEB_TIMEOUT) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.error("HTTP error while sending test event: %s", e.response.text)
+        raise JSTVWebError("HTTP error while sending test event") from e
+    except httpx.RequestError as e:
+        logger.error("Network error while sending test event: %s", e)
+        raise JSTVWebError("Network error while sending test event") from e

@@ -1,14 +1,13 @@
-from typing import TYPE_CHECKING, Generic, TypeVar, ClassVar, final
+from typing import TypeVar, ClassVar, Any, Iterator, final
 from dataclasses import dataclass
+import logging
 import re
+import bisect
 
 from app.events import jstv as evjstv
 from app.utils import reqcls
 
 from ..base import JSTVHandlerSettings, JSTVHandlerContext, JSTVBaseHandler
-
-if TYPE_CHECKING:
-    from app.db.models import Channel, User, Viewer
 
 __all__ = [
     "JSTVEventHandlerSettings",
@@ -18,9 +17,16 @@ __all__ = [
     "JSTVChatEmoteHandler",
 ]
 
-ContextT = TypeVar("ContextT", bound="JSTVEventHandlerContext", default="JSTVEventHandlerContext")
+T = TypeVar("T")
+MemoryT = TypeVar("MemoryT", default=None)
+CacheT = TypeVar("CacheT", default=None)
+ContextT = TypeVar("ContextT", bound="JSTVEventHandlerContext[Any, Any, Any]", default="JSTVEventHandlerContext[Any, Any, Any]")
 SettingsT = TypeVar("SettingsT", bound="JSTVEventHandlerSettings", default="JSTVEventHandlerSettings")
 MessageT = TypeVar("MessageT", bound=evjstv.JSTVMessage, default=evjstv.JSTVMessage)
+
+MISSING = object()
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -28,7 +34,7 @@ MessageT = TypeVar("MessageT", bound=evjstv.JSTVMessage, default=evjstv.JSTVMess
 
 @dataclass(frozen=True, slots=True)
 class JSTVEventHandlerSettings(JSTVHandlerSettings):
-    priority: int = 1000
+    pass
 
 
 # =============================================================================
@@ -36,12 +42,9 @@ class JSTVEventHandlerSettings(JSTVHandlerSettings):
 
 @dataclass(frozen=True, slots=True)
 class JSTVEventHandlerContext(
-    JSTVHandlerContext[MessageT, SettingsT],
-    Generic[MessageT, SettingsT],
+    JSTVHandlerContext[MessageT, JSTVEventHandlerSettings, MemoryT, CacheT],
 ):
-    channel: "Channel"
-    user: "User | None"
-    viewer: "Viewer | None"
+    message: MessageT
 
 
 # =============================================================================
@@ -49,19 +52,49 @@ class JSTVEventHandlerContext(
 
 class JSTVEventHandler(
     JSTVBaseHandler[
-        MessageT,
-        JSTVEventHandlerContext[MessageT, JSTVEventHandlerSettings],
+        JSTVEventHandlerContext[MessageT, MemoryT, CacheT],
         JSTVEventHandlerSettings,
     ],
-    reqcls_check=False,
 ):
     __slots__ = ()
+    __reqcheck__ = False
+
+    _subclasses_by_type: ClassVar[dict[type[evjstv.JSTVMessage], list[type["JSTVEventHandler[Any, Any, Any]"]]]] = {}
+
+    msgtypes: ClassVar[tuple[type[evjstv.JSTVMessage], ...]] = reqcls.required_field()
+
+    def __init_subclass__(cls):
+        super().__init_subclass__()
+
+        # Skip if not implemented
+        if not reqcls.is_implemented(cls):
+            return
+
+        subclasses = cls._subclasses_by_type
+
+        for msgtype in cls.msgtypes:
+            bisect.insort_right(
+                subclasses.setdefault(msgtype, []),
+                cls,
+                key=lambda h: -h.priority
+            )
+
+        # if cls.msgtypes:
+        #     logger.info(
+        #         "Registered event handler %s for events: %s",
+        #         cls.key,
+        #         ', '.join(sorted(x.discriminator for x in cls.msgtypes)),
+        #     )
+
+    @classmethod
+    def iter_handlers_by_type(cls, msgtype: type[evjstv.JSTVMessage]) -> Iterator[type["JSTVEventHandler[Any, Any, Any]"]]:
+        return iter(cls._subclasses_by_type.get(msgtype, ()))
 
 class JSTVChatTriggerHandler(
-    JSTVEventHandler[evjstv.JSTVNewChatMessage],
-    reqcls_check=False,
+    JSTVEventHandler[evjstv.JSTVNewChatMessage, MemoryT, CacheT],
 ):
     __slots__ = ()
+    __reqcheck__ = False
 
     msgtypes = (evjstv.JSTVNewChatMessage,)
 
@@ -89,16 +122,16 @@ class JSTVChatTriggerHandler(
     @reqcls.required_method
     async def handle_trigger(
         cls,
-        ctx: JSTVEventHandlerContext[evjstv.JSTVNewChatMessage, JSTVEventHandlerSettings],
+        ctx: JSTVEventHandlerContext[evjstv.JSTVNewChatMessage, MemoryT, CacheT],
         trigger: str | re.Match[str],
     ) -> bool:
         ...
 
 class JSTVChatEmoteHandler(
-    JSTVEventHandler[evjstv.JSTVNewChatMessage],
-    reqcls_check=False,
+    JSTVEventHandler[evjstv.JSTVNewChatMessage, MemoryT, CacheT],
 ):
     __slots__ = ()
+    __reqcheck__ = False
 
     msgtypes = (evjstv.JSTVNewChatMessage,)
 
@@ -117,7 +150,7 @@ class JSTVChatEmoteHandler(
     @reqcls.required_method
     async def handle_emote(
         cls,
-        ctx: JSTVEventHandlerContext[evjstv.JSTVNewChatMessage, JSTVEventHandlerSettings],
+        ctx: JSTVEventHandlerContext[evjstv.JSTVNewChatMessage, MemoryT, CacheT],
         emote: evjstv.JSTVChatEmote,
     ) -> bool:
         ...

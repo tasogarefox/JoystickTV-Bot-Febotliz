@@ -113,6 +113,8 @@ class JSTVMessage(JSTVLoggedModel):
 
     discriminator: ClassVar[str]
 
+    isFake: bool = False
+
     event: str
     type: str
 
@@ -138,6 +140,7 @@ class JSTVMessage(JSTVLoggedModel):
 
     def __str__(self) -> str:
         return (
+            f"{"FAKE " if self.isFake else ""}"
             f"{self.discriminator}"
             f" @{self.shortChannelId}"
             f" {self.shortText!r}"
@@ -200,13 +203,13 @@ class JSTVBaseUser(JSTVLoggedModel):
     signedPhotoThumbUrl: str | None = None
 
 class JSTVAuthor(JSTVBaseUser):
-    nickname: str | None
     displayNameWithFlair: str
-    isStreamer: bool
-    isModerator: bool
-    isSubscriber: bool
-    isVerified: bool
-    isContentCreator: bool
+    nickname: str | None = None
+    isStreamer: bool = False
+    isModerator: bool = False
+    isSubscriber: bool = False
+    isVerified: bool = False
+    isContentCreator: bool = False
 
 class JSTVStreamer(JSTVBaseUser):
     pass
@@ -454,11 +457,6 @@ class JSTVBaseChatMessage(JSTVBaseMessageWithMessageId):
     def sameAuthorAsStreamer(self) -> bool:
         """Whether the author is the same as the streamer."""
         return self.author.slug == self.streamer.slug
-
-    def splitBotCommandArg(self) -> list[str]:
-        if self.botCommandArg is None:
-            return []
-        return self.botCommandArg.split()
 
 class JSTVNewChatMessage(JSTVBaseChatMessage):
     discriminator = "ChatMessage:new_message"

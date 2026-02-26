@@ -1,9 +1,10 @@
 import asyncio
 
-from app.connectors.joysticktv import JoystickTVConnector
-from app.events import jstv as evjstv
-from app.db.enums import CommandAccessLevel
+from app.connectors.warudo import WarudoConnector
+from app.db.enums import AccessLevel
+from app.handlers.jstv.base import JSTVHandlerContext
 from app.handlers.jstv.commands import JSTVCommand, JSTVCommandSettings
+from app.handlers.jstv.events import JSTVChatEmoteHandler, JSTVEventHandlerSettings
 
 
 # ==============================================================================
@@ -14,6 +15,7 @@ DEFAULT_CHAT_RESPONSE = "Pet that fluff-ball <3"
 DEFAULT_WARUDO_ACTION = "HeadPets"
 
 # Pairs of aliases and warudo action
+# NOTE: Aliases must be in lowercase
 ALIASESES_TO_WARUDO_ACTION_GROUPS = (
     (("pet", "pets", "pat", "pats"), DEFAULT_WARUDO_ACTION),
     (("pet1", "pets1", "pat1", "pats1"), "HeadPets1"),
@@ -35,24 +37,27 @@ ALIASES = tuple(
     for alias in aliases
 )
 
+# Emote codes
+EMOTE_CODES = frozenset([":felizpet:"])
+
 
 # ==============================================================================
-# Shared
+# Helpers
 
 async def do_headpets(
-    connector: JoystickTVConnector,
-    evmsg: evjstv.JSTVMessage,
+    ctx: JSTVHandlerContext,
     *,
     chat_response: str = DEFAULT_CHAT_RESPONSE,
     warudo_action: str = DEFAULT_WARUDO_ACTION,
 ) -> None:
+    warudo = ctx.connector_manager.get(WarudoConnector)
     tasks = []
 
     if chat_response:
-        tasks.append(connector.send_chat(evmsg.channelId, chat_response))
+        tasks.append(ctx.reply(chat_response))
 
-    if warudo_action:
-        tasks.append(connector.send_warudo(warudo_action))
+    if warudo and warudo_action:
+        tasks.append(warudo.send_action(warudo_action))
 
     if tasks:
         await asyncio.gather(*tasks)
@@ -61,19 +66,41 @@ async def do_headpets(
 # ==============================================================================
 # Commands
 
-class HeadPetsCommand(JSTVCommand[evjstv.JSTVNewChatMessage]):
+class HeadPetsCommand(JSTVCommand):
     key = "feliz.headpets"
     title = "HeadPets"
     description = "Pet that fluff-ball in Warudo <3"
 
-    aliases = ALIASES
-
     settings = JSTVCommandSettings(
-        min_access_level=CommandAccessLevel.viewer,
+        aliases = ALIASES,
+        min_access_level=AccessLevel.viewer,
     )
 
     @classmethod
     async def handle(cls, ctx) -> bool:
-        warudo_action = ALIAS_TO_WARUDO_ACTION_MAP.get(ctx.alias, DEFAULT_WARUDO_ACTION)
-        await do_headpets(ctx.connector, ctx.message, warudo_action=warudo_action)
+        warudo_action = ALIAS_TO_WARUDO_ACTION_MAP.get(
+            ctx.alias.casefold(),
+            DEFAULT_WARUDO_ACTION,
+
+        )
+        await do_headpets(ctx, warudo_action=warudo_action)
         return True
+
+
+# ==============================================================================
+# Event Handlers
+
+class HeadPetsEmoteHandler(JSTVChatEmoteHandler):
+    key = HeadPetsCommand.key + ".emote"
+    title = HeadPetsCommand.title
+    description = HeadPetsCommand.description
+    priority = 0
+
+    emote_codes = EMOTE_CODES
+
+    settings = JSTVEventHandlerSettings()
+
+    @classmethod
+    async def handle_emote(cls, ctx, emote) -> bool:
+        await do_headpets(ctx)
+        return False

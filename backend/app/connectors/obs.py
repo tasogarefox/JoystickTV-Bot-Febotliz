@@ -1,12 +1,10 @@
 from typing import ClassVar
 from contextlib import asynccontextmanager
 import os
-from datetime import datetime
 
 from obswsc.client import ObsWsClient
 from obswsc.data import Request
 
-from ..utils.datetime import utcnow, utcmin
 from ..connector import ConnectorMessage, ConnectorManager, BaseConnector
 
 
@@ -21,8 +19,6 @@ assert WS_HOST, "Missing environment variable: OBS_WS_HOST"
 NAME = "OBS"
 URL = WS_HOST
 
-CLIP_COOLDOWN = 30  # clip command cooldown in seconds
-
 
 # ==============================================================================
 # OBS Connector
@@ -31,7 +27,6 @@ class OBSConnector(BaseConnector):
     NAME: ClassVar[str] = NAME
 
     _client: ObsWsClient
-    _last_clip: datetime = utcmin
 
     def __init__(self, manager: ConnectorManager):
         super().__init__(manager)
@@ -77,18 +72,15 @@ class OBSConnector(BaseConnector):
     async def main_loop(self):
         await self._shutdown.wait()
 
-    async def save_replay_buffer(self):
-        now = utcnow()
-        if (now - self._last_clip).total_seconds() < CLIP_COOLDOWN:
-            return
-        self._last_clip = now
-
+    async def save_replay_buffer(self) -> bool:
         resp = await self.request(Request("SaveReplayBuffer"))
         self.logger.info("Replay buffer saved: %s", resp)
 
         # resp = await self.request(Request("GetLastReplayBufferReplay"))
         # self.logger.info("Last replay: %s", resp)
         # file = resp.res_data.get("savedReplayPath")
+
+        return True
 
     async def request(self, req: Request) -> dict:
         return await self._client.request(req)
