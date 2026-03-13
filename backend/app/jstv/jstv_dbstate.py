@@ -491,9 +491,6 @@ async def on_tipped(
 
     points = adjust_viewer_points(viewer, points, f"tipped {amount} tokens")
 
-    channel.total_tipped += amount
-    channel.last_tipped_at = now
-
     # Update channel
     channel.cur_tipped = channel.accumulate_per_stream(
         channel.cur_tipped, amount, channel.last_tipped_at,
