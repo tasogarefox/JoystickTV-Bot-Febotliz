@@ -78,8 +78,7 @@ class HelpCommand(JSTVCommand):
             )
             return False
 
-        text = f"{alias}: {text}"
-        await ctx.reply(text)
+        await ctx.reply(f"{alias}: {text}")
         return True
 
     @classmethod
@@ -112,6 +111,5 @@ class HelpCommand(JSTVCommand):
             await ctx.reply("No commands available")
             return False
 
-        text = f"Available commands: {', '.join(aliases)}"
-        await ctx.reply(text)
+        await ctx.reply(f"Available commands: {', '.join(aliases)}")
         return True
