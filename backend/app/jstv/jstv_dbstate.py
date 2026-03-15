@@ -82,8 +82,7 @@ def reward_viewer_watch_time(
     Reward a viewer with points and watch time.
 
     - Only full REWARD_INTERVAL seconds earn points.
-    - Fractional seconds are preserved in rewarded_at for precise future calculations.
-    - Rewards only time that overlaps with the channel being live.
+    - Rewards only the time that overlaps with the channel being live.
 
     WARNING: Make sure that viewer and channel presence/online status are up-to-date before calling.
 
