@@ -134,10 +134,11 @@ def reward_viewer_watch_time(
     points = max(0, intervals * points_per_interval)
 
     # Update viewer
-    fresh_stream = channel.is_fresh_stream(viewer.watch_time_rewarded_at)
+    # TODO: Update viewer.watch_streak
 
-    viewer.watch_streak = 1 + (viewer.watch_streak if fresh_stream else 0)
-    viewer.cur_watch_time = seconds + (viewer.cur_watch_time if fresh_stream else 0)
+    viewer.cur_watch_time = channel.accumulate_per_stream(
+        viewer.cur_watch_time, seconds, viewer.watch_time_rewarded_at,
+    )
 
     viewer.total_watch_time += seconds
     viewer.watch_time_rewarded_at = time_end
