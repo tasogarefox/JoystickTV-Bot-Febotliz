@@ -27,7 +27,7 @@ semaphore = asyncio.Semaphore(5)  # Limit concurrent web requests
 # ==============================================================================
 # Config
 
-MAX_INTENSITY = 10
+MAX_INTENSITY = 20
 MAX_DURATION = 2
 MAX_WARNING_DELAY = 60
 

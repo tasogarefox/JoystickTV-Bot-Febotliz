@@ -131,7 +131,7 @@ class ShockOnTipEventHandler(JSTVEventHandler[evjstv.JSTVTipped]):
     key = "feliz.shock.on_tip"
     title = "Shock On Tip"
     description = "Send shocks when someone tips"
-    disabled = True
+    # disabled = True
     priority = 1000
     # tags = frozenset({HandlerTags.nsfw})
 

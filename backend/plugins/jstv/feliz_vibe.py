@@ -17,7 +17,7 @@ from app.handlers.jstv.events import JSTVEventHandler, JSTVEventHandlerSettings
 
 OVERRIDE_VIBES = True
 
-COST_PER_SECOND = 1.0
+COST_PER_SECOND = 0.5
 
 
 # ==============================================================================
@@ -164,7 +164,7 @@ class VibeOnTipEventHandler(JSTVEventHandler[evjstv.JSTVTipped]):
     key = "feliz.vibe.on_tip"
     title = "Vibe On Tip"
     description = "Send vibes when someone tips"
-    # disabled = True
+    disabled = True
     priority = 1000
     tags = frozenset({HandlerTags.nsfw})
 
