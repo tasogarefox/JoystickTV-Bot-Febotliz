@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.datetime import utcmin, utcnow
 
-from app.db.models import Channel, User, Viewer
+from app.db.models import Channel, User, Viewer, MAX_SESSION_RECOVERY_TIME
 
 from app.jstv import jstv_db, jstv_web, jstv_auth
 from app.jstv.jstv_error import JSTVAuthError, JSTVWebError
@@ -46,8 +46,8 @@ REWARD_RAIDED_PER_VIEWER: float = 0.0
 REWARD_RAIDED_FIXED: int = 50
 """points for raid/drop-in"""
 
-MAX_STATUS_RECOVERY_TIME: int = REWARD_INTERVAL
-"""max channel/viewer online status recovery time in seconds"""
+REWARD_STREAK_FIXED: int = 100
+"""fixed points for each consecutive stream"""
 
 
 # ==============================================================================
@@ -97,13 +97,13 @@ def reward_viewer_watch_time(
     # NOTE: Channel and viewer live/presence related timestamps are never None.
     now = utcnow()
     time_start = max(
-        channel.live_at,
-        viewer.joined_at,
+        channel.live_started_at,
+        viewer.presence_started_at,
         viewer.watch_time_rewarded_at,
     )
     time_end = min(
-        now if viewer.is_present else viewer.left_at,
-        now if channel.is_live else channel.offline_at,
+        now if viewer.is_present else viewer.last_left_at,
+        now if channel.is_live else channel.last_offline_at,
     )
 
     # Return if no reward is due
@@ -133,7 +133,10 @@ def reward_viewer_watch_time(
     points = max(0, intervals * points_per_interval)
 
     # Update viewer
-    # TODO: Update viewer.watch_streak
+    update_watch_streak(channel, viewer)
+
+    if channel.is_fresh_stream(viewer.watch_time_rewarded_at):
+        viewer.total_streams_watched += 1
 
     viewer.cur_watch_time = channel.accumulate_per_stream(
         viewer.cur_watch_time, seconds, viewer.watch_time_rewarded_at,
@@ -149,12 +152,29 @@ def reward_viewer_watch_time(
 
     return points
 
+def update_watch_streak(channel: Channel, viewer: Viewer) -> None:
+    """
+    Update viewer watch streak.
+    """
+    streak = channel.accumulate_per_stream_streak(
+        viewer.cur_watch_streak, 1, viewer.last_streak_stream_id,
+    )
+
+    # Nothing changed
+    if streak == viewer.cur_watch_streak:
+        return
+
+    # Update viewer
+    viewer.total_streams_watched += 1
+    viewer.cur_watch_streak = streak
+    viewer.last_streak_stream_id = channel.cur_stream_id
+
 async def on_connected(db: AsyncSession) -> set[Channel]:
     """
     Handle (re)connection.
 
     - Reconciles channel live/offline state with the database.
-    - If downtime exceeds `MAX_STATUS_RECOVERY_TIME`, marks all present viewers
+    - If downtime exceeds `MAX_SESSION_RECOVERY_TIME`, marks all present viewers
       offline at a safe cutoff time and rewards them up to that point.
     """
     logger.info("Updating live channels...")
@@ -170,9 +190,9 @@ async def on_connected(db: AsyncSession) -> set[Channel]:
     last_event_at = await jstv_db.get_last_event_received_time(db) or utcmin
 
     gap_seconds = (now - last_event_at).total_seconds()
-    within_recovery_window = gap_seconds <= MAX_STATUS_RECOVERY_TIME  # Are we within the recovery window?
+    within_recovery_window = gap_seconds <= MAX_SESSION_RECOVERY_TIME
 
-    cutoff_at = min(now, last_event_at + timedelta(seconds=MAX_STATUS_RECOVERY_TIME))
+    cutoff_at = min(now, last_event_at + timedelta(seconds=MAX_SESSION_RECOVERY_TIME))
 
     # Fetch stream settings for all channels in parallel
     async def get_live_status_helper(
@@ -209,7 +229,7 @@ async def on_connected(db: AsyncSession) -> set[Channel]:
             if is_live:  # channel.is_live == False
                 channel.set_live(now)
             else:  # channel.is_live == True
-                channel.force_offline(max(channel.live_at, cutoff_at))
+                channel.force_offline(cutoff_at)
 
         result = await db.execute(
             select(Viewer)
@@ -230,7 +250,7 @@ async def on_connected(db: AsyncSession) -> set[Channel]:
 
         # Mark all present viewers as offline and reward them up until `cutoff_at`
         for viewer in viewers:
-            viewer.force_offline(max(viewer.joined_at, cutoff_at))
+            viewer.force_offline(cutoff_at)
             reward_viewer_watch_time(channel, viewer)  # WARNING: Channel and viewer must be up-to-date
 
     return channels
@@ -392,7 +412,7 @@ async def on_leave_stream(
     if not viewer.is_present:
         logger.info(
             "Fail-safe: Viewer already left channel %s at %s - ignoring",
-            channel.channel_id, viewer.left_at,
+            channel.channel_id, viewer.last_left_at,
         )
         return
 

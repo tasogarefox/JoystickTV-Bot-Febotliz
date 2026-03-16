@@ -825,7 +825,7 @@ async def _check_channel_cooldown(
     if (
         settings.channel_limit > 0 and
         cooldown.cur_count >= settings.channel_limit and
-        cooldown.last_used_at > channel.live_at
+        not channel.is_fresh_stream(cooldown.last_used_at)
     ):
         await ctx.reply((
             f"Command {ctx.alias} already hit its"
@@ -833,10 +833,10 @@ async def _check_channel_cooldown(
         ), mention=True)
         return False
 
-    tpassed = (now - cooldown.last_used_at).total_seconds()
-    tleft = settings.channel_cooldown - int(tpassed)
-    if tleft > 0:
-        tmin, tsec = divmod(tleft, 60)
+    tdelta = (now - cooldown.last_used_at).total_seconds()
+    tremaining = settings.channel_cooldown - int(tdelta)
+    if tremaining > 0:
+        tmin, tsec = divmod(tremaining, 60)
         await ctx.reply((
             f"Command {ctx.alias} is on cooldown"
             f" for {tmin:,d}:{tsec:02d} remaining"
@@ -863,7 +863,7 @@ async def _check_viewer_cooldown(
     if (
         settings.viewer_limit > 0 and
         cooldown.cur_count >= settings.viewer_limit and
-        cooldown.last_used_at > channel.live_at
+        not channel.is_fresh_stream(cooldown.last_used_at)
     ):
         await ctx.reply((
             f"Command {ctx.alias} already hit its per-viewer"
@@ -871,10 +871,10 @@ async def _check_viewer_cooldown(
         ), mention=True)
         return False
 
-    tpassed = (now - cooldown.last_used_at).total_seconds()
-    tleft = settings.viewer_cooldown - int(tpassed)
-    if tleft > 0:
-        tmin, tsec = divmod(tleft, 60)
+    tdelta = (now - cooldown.last_used_at).total_seconds()
+    tremaining = settings.viewer_cooldown - int(tdelta)
+    if tremaining > 0:
+        tmin, tsec = divmod(tremaining, 60)
         await ctx.reply((
             f"Command {ctx.alias} is on per-viewer cooldown"
             f" for {tmin:,d}:{tsec:02d} remaining"

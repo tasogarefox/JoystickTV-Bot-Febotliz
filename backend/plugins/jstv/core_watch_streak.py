@@ -18,7 +18,7 @@ class PointsCommand(JSTVCommand):
     @classmethod
     async def handle(cls, ctx) -> bool:
         await ctx.reply((
-            f"has watched {ctx.viewer.watch_streak} streams in a row"
+            f"has watched {ctx.viewer.cur_watch_streak} streams in a row"
         ), mention=True)
 
         return True

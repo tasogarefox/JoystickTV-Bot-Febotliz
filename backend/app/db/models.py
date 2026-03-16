@@ -1,5 +1,6 @@
 from typing import TypeVar, Any, cast
 from datetime import datetime
+import uuid
 
 from sqlalchemy import (
     ForeignKey, Index, UniqueConstraint, CheckConstraint,
@@ -19,6 +20,13 @@ from .types import IntEnum, AwareDateTime
 from .enums import AccessLevel
 
 NumberT = TypeVar("NumberT", int, float)
+
+
+# ==============================================================================
+# Config
+
+MAX_SESSION_RECOVERY_TIME: int = 600
+"""Maximum number of seconds to allow for channel/viewer session recovery."""
 
 
 # ==============================================================================
@@ -85,8 +93,20 @@ class Channel(Base):
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
-    live_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    offline_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    cur_stream_id: Mapped[str | None] = mapped_column(String(36), default=None, nullable=True)
+    """Unique ID of current stream. DO NOT SET DIRECTLY"""
+
+    prev_stream_id: Mapped[str | None] = mapped_column(String(36), default=None, nullable=True)
+    """Unique ID of previous stream. DO NOT SET DIRECTLY"""
+
+    live_started_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    """Timestamp when the current live session began. DO NOT SET DIRECTLY"""
+
+    last_offline_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    """Timestamp of last time the channel went offline. DO NOT SET DIRECTLY"""
+
+    is_live: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    """True if the channel is currently live. DO NOT SET DIRECTLY"""
 
     last_tipped_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
     """Last time someone tipped the channel."""
@@ -102,32 +122,39 @@ class Channel(Base):
     access_token: Mapped["ChannelAccessToken"]  = relationship("ChannelAccessToken", uselist=False, back_populates="channel", cascade="all, delete-orphan")
     commands: Mapped[list["Command"]] = relationship("Command", uselist=True, back_populates="channel")
 
-    @hybrid_property
-    def is_live(self) -> bool: # pyright: ignore[reportRedeclaration]
-        return self.live_at > self.offline_at
-
-    @is_live.expression # pyright: ignore[reportArgumentType]
-    def is_live(cls): # pyright: ignore[reportRedeclaration]
-        return cls.live_at > cls.offline_at
-
     def set_live(self, timestamp: datetime | None = None) -> None:
-        """Mark the channel as live."""
+        """Mark the channel as live and start a new stream if not in recovery."""
         if self.is_live:
             return
 
-        self.live_at = timestamp or utcnow()
+        timestamp = timestamp or utcnow()
+
+        # Only start a new stream if we're outside the recovery window
+        if not self.is_within_recovery_window(timestamp):
+            self.live_started_at = timestamp
+
+            # Update stream IDs
+            self.prev_stream_id = self.cur_stream_id
+            self.cur_stream_id = str(uuid.uuid4())
+
+        self.is_live = True
 
     def set_offline(self, timestamp: datetime | None = None) -> None:
         """Mark the channel as offline."""
         if not self.is_live:
             return
 
-        self.offline_at = timestamp or utcnow()
+        self.is_live = False
+        self.last_offline_at = timestamp or utcnow()
 
     def force_offline(self, timestamp: datetime | None = None) -> None:
         """Force the channel into offline state."""
-        self.offline_at = timestamp or utcnow()
-        self.live_at = min(self.live_at, self.offline_at)
+        self.set_offline(timestamp)
+
+    def is_within_recovery_window(self, timestamp: datetime | None = None) -> bool:
+        """Returns True if we are within the session recovery window."""
+        delta = (timestamp or utcnow()) - self.last_offline_at
+        return delta.total_seconds() < MAX_SESSION_RECOVERY_TIME
 
     def is_fresh_stream(self, last_at: datetime | None) -> bool:
         """
@@ -136,7 +163,7 @@ class Channel(Base):
 
         NOTE: Does not check if the stream is live.
         """
-        return not last_at or last_at < self.live_at
+        return not last_at or last_at < self.live_started_at
 
     def accumulate_per_stream(
         self,
@@ -157,6 +184,34 @@ class Channel(Base):
 
         # Reset if first time in current live stream
         if self.is_fresh_stream(last_at):
+            return amount
+
+        return prev + amount
+
+    def accumulate_per_stream_streak(
+        self,
+        prev: NumberT,
+        amount: NumberT,
+        last_stream_id: str | None,
+    ) -> NumberT:
+        """
+        Accumulate per-stream-streak values; resets if streak broken.
+
+        Adds `amount` to `prev` for the current stream streak,
+        resetting if the streak has broken.
+        Returns `prev` unchanged if already accumulated this
+        stream or if never streamed.
+        """
+        # Return unchanged if no stream to accumulate
+        if self.cur_stream_id is None:
+            return prev
+
+        # Return unchanged if already counted for this stream
+        if last_stream_id == self.cur_stream_id:
+            return prev
+
+        # Reset if the streak has broken
+        if self.prev_stream_id and last_stream_id != self.prev_stream_id:
             return amount
 
         return prev + amount
@@ -245,14 +300,14 @@ class Viewer(Base):
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
-    joined_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    """Timestamp when the current continuous presence began (first active session)."""
+    presence_started_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    """Timestamp when the current continuous presence began. DO NOT SET DIRECTLY"""
 
-    left_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
-    """Timestamp when the current continuous presence ended (last active session)."""
+    last_left_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
+    """Timestamp when the last leave event was received. DO NOT SET DIRECTLY"""
 
-    join_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    """Number of times viewer is present (for multiple devices)"""
+    active_session_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Number of currently active sessions. Used for multiple device/session tracking. DO NOT SET DIRECTLY"""
 
     watch_time_rewarded_at: Mapped[datetime] = mapped_column(AwareDateTime, default=utcnow, nullable=False)
     """Timestamp when the viewer was last rewarded for watch time."""
@@ -300,8 +355,14 @@ class Viewer(Base):
     cur_watch_time: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     """Watch time for the current stream."""
 
-    watch_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_streams_watched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    """Total number of streams the viewer has watched."""
+
+    cur_watch_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     """How many streams the viewer has watched in a row."""
+
+    last_streak_stream_id: Mapped[str | None] = mapped_column(String(36), default=None, nullable=True)
+    """The ID of the last stream the viewer watched in a row."""
 
     total_chatted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     """Total number of messages sent in the channel (only while bot was running)."""
@@ -334,35 +395,38 @@ class Viewer(Base):
     @hybrid_property
     def is_present(self) -> bool: # pyright: ignore[reportRedeclaration]
         """Returns True if the viewer is currently present in the channel."""
-        return self.join_count > 0
+        return self.active_session_count > 0
 
     @is_present.expression # pyright: ignore[reportArgumentType]
     def is_present(cls):
         """SQL expression for querying is_present."""
-        return cls.join_count > 0
+        return cls.active_session_count > 0
 
     def join(self, timestamp: datetime | None = None):
-        """Mark viewer as present on a new device/session; online if any sessions."""
-        if self.join_count == 0:
-            self.joined_at = timestamp or utcnow()
+        """Mark viewer as present on a new device/session; starts presence on first session."""
+        if self.active_session_count == 0:
+            timestamp = timestamp or utcnow()
+            if not self.is_within_recovery_window(timestamp):
+                self.presence_started_at = timestamp
 
-        self.join_count += 1
+        self.active_session_count += 1
 
     def leave(self, timestamp: datetime | None = None):
-        """Mark one device/session as left; fully offline if last session."""
-        if self.join_count > 0:
-            self.join_count -= 1
+        """Mark one device/session as left; record last leave event."""
+        if self.active_session_count > 0:
+            self.active_session_count -= 1
 
-        if self.join_count == 0:
-            self.left_at = timestamp or utcnow()
+        self.last_left_at = timestamp or utcnow()
 
     def force_offline(self, timestamp: datetime | None = None):
         """Force viewer fully offline, clearing any sessions."""
-        self.join_count = 0
-        self.left_at = timestamp or utcnow()
+        self.active_session_count = 0
+        self.last_left_at = timestamp or utcnow()
 
-        # Guard against invalid state by ensuring joined_at <= left_at
-        self.joined_at = min(self.joined_at, self.left_at)
+    def is_within_recovery_window(self, timestamp: datetime | None = None) -> bool:
+        """Returns True if we are within the session recovery window."""
+        delta = (timestamp or utcnow()) - self.last_left_at
+        return delta.total_seconds() < MAX_SESSION_RECOVERY_TIME
 
     user: Mapped[User] = relationship("User", uselist=False, back_populates="viewers")
     channel: Mapped[Channel] = relationship("Channel", uselist=False, back_populates="viewers")
