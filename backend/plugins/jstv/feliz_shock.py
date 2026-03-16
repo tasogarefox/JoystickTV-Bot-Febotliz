@@ -65,7 +65,10 @@ class ShockCommand(JSTVCommand[None, Cache]):
             await ctx.reply("No shockers available")
             return False
 
-        limit = bool(ctx.message and not ctx.message.isFake)
+        limit = bool(
+            ctx.message and not ctx.message.isFake
+            and not ctx.viewer.is_streamer  # Don't limit the streamer
+        )
 
         try:
             if not ctx.argument:
