@@ -1,5 +1,6 @@
 import asyncio
 
+from app.settings import NSFW_ENABLED
 from app.connectors.warudo import WarudoConnector
 from app.db.enums import AccessLevel
 from app.handlers.jstv.commands import JSTVCommand, JSTVCommandSettings
@@ -24,7 +25,12 @@ class StretchCommand(JSTVCommand):
         warudo = ctx.connector_manager.get(WarudoConnector)
         tasks = []
 
-        tasks.append(ctx.reply("Stretchies time! Unfold those foxy folds!"))
+        if not NSFW_ENABLED:
+            msg = "Stretchies time!"
+        else:
+            msg = "Stretchies time! Unfold those foxy folds!"
+
+        tasks.append(ctx.reply(msg))
 
         if warudo:
             tasks.append(warudo.send_action("Stretchies"))

@@ -1,5 +1,6 @@
 import asyncio
 
+from app.settings import NSFW_ENABLED
 from app.connectors.warudo import WarudoConnector
 from app.db.enums import AccessLevel
 from app.handlers.jstv.commands import JSTVCommand, JSTVCommandSettings
@@ -24,7 +25,12 @@ class HydrateCommand(JSTVCommand):
         warudo = ctx.connector_manager.get(WarudoConnector)
         tasks = []
 
-        tasks.append(ctx.reply("Drink up, Good Girl 💦"))
+        if not NSFW_ENABLED:
+            msg = "Hydration time!"
+        else:
+            msg = "Drink up, Good Girl 💦"
+
+        tasks.append(ctx.reply(msg))
 
         if warudo:
             tasks.append(warudo.send_action("Hydrate"))
