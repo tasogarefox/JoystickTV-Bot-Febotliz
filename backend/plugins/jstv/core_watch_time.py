@@ -17,7 +17,8 @@ class PointsCommand(JSTVCommand):
 
     @classmethod
     async def handle(cls, ctx) -> bool:
-        thour, tmin = divmod(int(ctx.viewer.total_watch_time), 3600)
+        tmin, tsec = divmod(int(ctx.viewer.total_watch_time), 60)
+        thour, tmin = divmod(tmin, 60)
         tday, thour = divmod(thour, 24)
 
         await ctx.reply((
