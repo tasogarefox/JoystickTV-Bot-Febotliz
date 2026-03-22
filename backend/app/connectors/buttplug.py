@@ -45,7 +45,6 @@ def parse_vibes(
 
     # Default/starting values (uses class defaults if not specified)
     prev_action = VibeFrame.new_override()
-    prev_section = (prev_action,)
 
     # Values for current action
     cur_start_value: float | None = None
@@ -113,11 +112,8 @@ def parse_vibes(
         if not cur_section:
             return False
 
-        # Save as previous section
-        prev_section = tuple(cur_section)
-
         # Add section
-        sections.append(prev_section)
+        sections.append(tuple(cur_section))
 
         # Reset current section
         cur_section.clear()
@@ -193,11 +189,13 @@ def parse_vibes(
 
             raise ValueError(f"Invalid time format: {arg}")
 
-        elif arg.endswith("r") or arg.endswith("x"):  # Repeat the last section
+        elif any(arg.endswith(x) for x in "xr"):  # Repeat the last section
             # Note: If current section is empty, the previous section will be used instead
             flush_cur_section()
-            if not sections or not prev_section:
+            if not sections:
                 continue
+
+            prev_section = sections[-1]
 
             repeat = 1
             if len(arg) > 1:
@@ -209,7 +207,7 @@ def parse_vibes(
             for _ in range(min(100, repeat)):
                 sections.append(prev_section)
 
-        elif arg.endswith("d") or arg.endswith("t"):  # Repeat for the given duration
+        elif any(arg.endswith(x) for x in "Sdt"):  # Repeat for the given duration
             # Note: If current section is empty, the previous section will be used instead
             flush_cur_section()
             if not sections:
