@@ -16,9 +16,6 @@ from buttplug import (
 from app.utils.asyncio import async_select
 from app.connector import ConnectorMessage, ConnectorManager, BaseConnector
 
-# TODO: FIX: !vibe 1s 0..100% 100..30% 30..100% 100..0% 0% - "100..0% 0%" doesn't seem to do anything...
-
-
 
 # ==============================================================================
 # Config
@@ -44,59 +41,77 @@ def parse_vibes(
     sections: list[tuple[VibeFrame, ...]] = []
     cur_section: list[VibeFrame] = []
 
-    # Default/starting values (uses class defaults if not specified)
-    prev_action = VibeFrame.new_override()
+    # Previous/starting values (uses class defaults if not specified)
+    prev_intensities: tuple[float, ...] = ()
+    prev_duration: float = VibeFrame.duration
+    prev_devices: tuple[str, ...] = ()
 
     # Values for current action
-    cur_start_value: float | None = None
-    cur_stop_value: float | None = None  # NOTE: Defaults to cur_start_amount
+    cur_intensities: list[float] | None = None
     cur_duration: float | None = None
     cur_devices: list[str] | None = None
 
     def flush_cur_action() -> bool:
         """Flush the current action into the list."""
-        nonlocal prev_action, cur_start_value, cur_stop_value, cur_duration, cur_devices
+        nonlocal prev_intensities, prev_duration, prev_devices
+        nonlocal cur_intensities, cur_duration, cur_devices
 
         # If the current action is empty, do nothing
-        if cur_start_value is None and cur_duration is None:
+        if cur_intensities is None and cur_duration is None:
             return False
 
         # Merge the current action values with the previous
-        cur_start_value = abs(cur_start_value) if cur_start_value is not None else prev_action.intensity
-        cur_stop_value = abs(cur_stop_value) if cur_stop_value is not None else cur_start_value
-        cur_duration = abs(cur_duration) if cur_duration is not None else prev_action.duration
-        cur_devices = cur_devices if cur_devices is not None else list(prev_action.get_devices())
+        cur_intensities = cur_intensities if cur_intensities is not None else list(prev_intensities)
+        cur_duration = max(0, cur_duration) if cur_duration is not None else prev_duration
+        cur_devices = cur_devices if cur_devices is not None else list(prev_devices)
 
-        # Determine the number of actions to add
-        count = max(1, int(min(
-            abs(cur_stop_value - cur_start_value) / 0.05 + 1,
-            cur_duration / 0.2,
-        )))
-        step_value = (cur_stop_value - cur_start_value) / (count - 1) if count > 1 else 0
-        step_time = cur_duration / count
+        # Ensure we have at least one intensity
+        if not cur_intensities:
+            return False
 
-        # If the step value is 0, use the average of the start and stop value
-        if step_value == 0:
-            cur_start_value = (cur_start_value + cur_stop_value) / 2
+        # Normalize to at least 2 segments
+        segments = cur_intensities if len(cur_intensities) > 1 else [cur_intensities[0], cur_intensities[0]]
 
-        # Add actions
-        for i in range(count):
-            value = cur_start_value + step_value * i
-            if not cur_devices:
-                prev_action = VibeFrame.new_override(
-                    step_time,
-                    value,
-                )
-            else:
-                prev_action = VibeFrame.new_exclusive(
-                    step_time,
-                    (VibeTarget(d, value) for d in cur_devices),
-                )
-            cur_section.append(prev_action)
+        seg_count = len(segments) - 1
+        seg_duration = cur_duration / seg_count
 
-        # Reset the current action
-        cur_start_value = None
-        cur_stop_value = None
+        for seg_idx in range(seg_count):
+            start = segments[seg_idx]
+            stop = segments[seg_idx + 1]
+
+            # Determine number of steps for this segment
+            count = max(1, int(min(
+                abs(stop - start) / 0.05 + 1,
+                seg_duration / 0.2,
+            )))
+
+            step_intensity = (stop - start) / (count - 1) if count > 1 else 0
+            step_duration = seg_duration / count
+
+            # If flat, use midpoint
+            if step_intensity == 0:
+                start = (start + stop) / 2
+
+            for i in range(count):
+                intensity = start + step_intensity * i
+
+                if not cur_devices:
+                    action = VibeFrame.new_override(step_duration, intensity)
+                else:
+                    action = VibeFrame.new_exclusive(
+                        step_duration,
+                        (VibeTarget(x, intensity) for x in cur_devices),
+                    )
+
+                cur_section.append(action)
+
+        # Update previous values
+        prev_intensities = tuple(cur_intensities)
+        prev_duration = cur_duration
+        prev_devices = tuple(cur_devices)
+
+        # Reset current values
+        cur_intensities = None
         cur_duration = None
         cur_devices = None
 
@@ -128,7 +143,7 @@ def parse_vibes(
         if not arg:
             continue
 
-        if not arg[0].isdigit():  # This is a device name
+        if not arg[0].isdigit() and arg[0] != ".":  # This is a device name
             # DISABLED: The following line disables the use of device names.
             raise ValueError(f"Invalid argument: {arg}")
 
@@ -147,11 +162,11 @@ def parse_vibes(
             continue
 
         elif arg.endswith("%"):  # This is an amount in percent
-            if cur_start_value is not None:
+            if cur_intensities is not None:
                 flush_cur_action()
 
             try:
-                cur_start_value = int(arg[:-1]) / 100
+                cur_intensities = [int(arg[:-1]) / 100]
                 continue
             except ValueError:
                 pass
@@ -159,14 +174,37 @@ def parse_vibes(
             m = re.fullmatch(r'(\d+)%?-(\d+)%', arg)
             if m:
                 low = int(m.group(1)) / 100
-                high = int(m.group(2) or low) / 100
-                cur_start_value = random.uniform(low, high)
+                high = int(m.group(2)) / 100
+                cur_intensities = [random.uniform(low, high)]
                 continue
 
-            m = re.fullmatch(r'(\d+)%?\.{2,}(\d+)%', arg)
+            m = re.fullmatch(r'(?:\d+%?)?(?:\.{2,}\d+%?)+', arg)
             if m:
-                cur_start_value = int(m.group(1)) / 100
-                cur_stop_value = int(m.group(2) or cur_start_value) / 100
+                cur_intensities = []
+
+                parts = arg.split("..")
+                for i, part in enumerate(parts):
+                    if part == "":
+                        # Leading ".."
+                        if i == 0:
+                            if not prev_intensities:
+                                raise ValueError("Cannot start with '..' without previous intensities")
+
+                            cur_intensities.append(prev_intensities[-1])
+                            continue
+
+                        raise ValueError(f"Invalid empty percent segment in: {arg}")
+
+                    if part.endswith('%'):
+                        part = part[:-1]
+
+                    try:
+                        value = int(part) / 100
+                    except ValueError:
+                        raise ValueError(f"Invalid percent value: {part}")
+
+                    cur_intensities.append(value)
+
                 continue
 
             raise ValueError(f"Invalid percent format: {arg}")
@@ -316,6 +354,9 @@ class VibeTarget(NamedTuple):
     device: str
     intensity: float
 
+    def __str__(self) -> str:
+        return f"{self.device}={round(self.intensity, 2)}"
+
 @dataclass(frozen=True, slots=True)
 class VibeFrame:
     duration: float = 30.0
@@ -356,9 +397,23 @@ class VibeFrame:
 
     def __str__(self) -> str:
         if self.mode == VibeTargetMode.OVERRIDE:
-            return f"<{self.__class__.__name__} {self.duration}s to {self.intensity} override {self.targets}>"
+            return (
+                f"<{self.__class__.__name__}"
+                f" {round(self.duration, 2)}s"
+                f" at {round(self.intensity, 2)}"
+                f" override {self.targets}"
+                f">"
+            )
+
         if self.mode == VibeTargetMode.EXCLUSIVE:
-            return f"<{self.__class__.__name__} {self.duration}s to exclusive {self.targets}>"
+            return (
+                f"<{self.__class__.__name__}"
+                f" {round(self.duration, 2)}s"
+                f" at exclusive"
+                f" {self.targets}"
+                f">"
+            )
+
         return super().__str__()
 
     def __bool__(self) -> bool:
@@ -391,7 +446,12 @@ class VibeGroup:
     username: str | None = None
 
     def __str__(self) -> str:
-        return f"<{self.__class__.__name__} {len(self)} items for {self.get_duration()}s>"
+        return (
+            f"<{self.__class__.__name__}"
+            f" {len(self)} items"
+            f" for {round(self.get_duration(), 2)}s"
+            f">"
+        )
 
     def __bool__(self) -> bool:
         return bool(self.frames)

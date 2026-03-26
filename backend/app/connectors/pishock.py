@@ -150,7 +150,13 @@ class ShockFrame(NamedTuple):
     """If this is greater than 0, vibrate and wait this many seconds before shocking"""
 
     def __str__(self) -> str:
-        return f"<{self.__class__.__name__} {self.mode.name} {self.duration}s {self.intensity}%>"
+        return (
+            f"<{self.__class__.__name__}"
+            f" {self.mode.name}"
+            f" {round(self.duration, 2)}s"
+            f" {self.intensity}%"
+            f">"
+        )
 
     def __bool__(self) -> bool:
         return self.duration > 0.001  # Minimum duration is 1ms
@@ -167,7 +173,12 @@ class ShockGroup:
     username: str = ""
 
     def __str__(self) -> str:
-        return f"<{self.__class__.__name__} {len(self)} items for {self.get_duration()}s>"
+        return (
+            f"<{self.__class__.__name__}"
+            f" {len(self)} items"
+            f" for {round(self.get_duration(), 2)}s"
+            f">"
+        )
 
     def __bool__(self) -> bool:
         return bool(self.frames)
