@@ -1,5 +1,6 @@
 from typing import Any
 from dataclasses import dataclass
+import os
 
 from app.connectors.buttplug import (
     ButtplugConnector, VibeGroup, VibeFrame,
@@ -15,9 +16,12 @@ from app.handlers.jstv.events import JSTVEventHandler, JSTVEventHandlerSettings
 # ==============================================================================
 # Config
 
+ENFORCE_DEVICES_AVAILABLE = True
 OVERRIDE_VIBES = True
 
-COST_PER_SECOND = 0.5
+MAX_DURATION = float(os.getenv("BUTTPLUG_MAX_DURATION", 120.0))
+
+COST_PER_SECOND = float(os.getenv("BUTTPLUG_COST_PER_SECOND", 10.0))
 
 
 # ==============================================================================
@@ -58,20 +62,23 @@ class VibeCommand(JSTVCommand[Any, Cache]):
             await ctx.reply("Intiface not connected")
             return False
 
-        if not buttplug.has_devices:
+        if not buttplug.has_devices and ENFORCE_DEVICES_AVAILABLE:
             await ctx.reply("No vibrators available")
             return False
 
-        limit = bool(
-            ctx.message and not ctx.message.isFake
+        parse_kwargs = {}
+        if (
+            ctx.message and
+            not ctx.message.isFake
             and not ctx.viewer.is_streamer  # Don't limit the streamer
-        )
+        ):
+            parse_kwargs["max_duration"] = MAX_DURATION
 
         try:
             if not ctx.argument:
                 raise ValueError
 
-            vibes = parse_vibes(ctx.argument, limit=limit)
+            vibes = parse_vibes(ctx.argument, **parse_kwargs)
 
         except ValueError as e:
             errmsg = str(e)
@@ -164,7 +171,7 @@ class VibeOnTipEventHandler(JSTVEventHandler[evjstv.JSTVTipped]):
     key = "feliz.vibe.on_tip"
     title = "Vibe On Tip"
     description = "Send vibes when someone tips"
-    disabled = True
+    # disabled = True
     priority = 1000
     tags = frozenset({HandlerTags.nsfw})
 
@@ -210,13 +217,13 @@ class VibeOnTipEventHandler(JSTVEventHandler[evjstv.JSTVTipped]):
         elif tip_amount == 12:
             vibes = parse_vibes("12s 0%")  # Pause the Queue
         elif tip_amount == 36:
-            vibes = parse_vibes("1s 0% 20% 40% 60% 80% 100% 72t")  # Earthquake Pattern
+            vibes = parse_vibes("1s 0% 20% 40% 60% 80% 100% 72S")  # Earthquake Pattern
         elif tip_amount == 37:
-            vibes = parse_vibes("1s 0% 10% 20% 30% 40% 50% 60% 70% 100% 74t")  # Fireworks Pattern
+            vibes = parse_vibes("1s 0% 10% 20% 30% 40% 50% 60% 70% 100% 74S")  # Fireworks Pattern
         elif tip_amount == 38:
-            vibes = parse_vibes("1.5s 1..100% 1.5s 100..1% 76t")  # Wave Pattern
+            vibes = parse_vibes("1.5s 1..100% 1.5s 100..1% 76S")  # Wave Pattern
         elif tip_amount == 39:
-            vibes = parse_vibes("1s 0% 100% 78t")  # Pulse Pattern
+            vibes = parse_vibes("1s 0% 100% 78S")  # Pulse Pattern
 
         if not vibes:
             return False

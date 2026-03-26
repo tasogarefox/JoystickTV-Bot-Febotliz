@@ -16,11 +16,12 @@ from buttplug import (
 from app.utils.asyncio import async_select
 from app.connector import ConnectorMessage, ConnectorManager, BaseConnector
 
+# TODO: FIX: !vibe 1s 0..100% 100..30% 30..100% 100..0% 0% - "100..0% 0%" doesn't seem to do anything...
+
+
 
 # ==============================================================================
 # Config
-
-MAX_PARSED_DURATION = 180
 
 CHAT_VIBE_INFO = False
 VIBE_CHECK_INTERVAL = 0.1
@@ -38,7 +39,7 @@ URL = WS_HOST
 def parse_vibes(
     vibestr: str,
     *,
-    limit: bool = True,
+    max_duration: float = 3600.0,
 ) -> tuple["VibeFrame", ...]:
     sections: list[tuple[VibeFrame, ...]] = []
     cur_section: list[VibeFrame] = []
@@ -282,16 +283,15 @@ def parse_vibes(
 
             total_duration += action.duration
 
-            if limit:
-                overflow_duration = total_duration - MAX_PARSED_DURATION
-                if overflow_duration > 0:
-                    stop = True
-                    action = VibeFrame(
-                        duration=action.duration - overflow_duration,
-                        intensity=action.intensity,
-                        targets=action.targets,
-                        mode=action.mode,
-                    )
+            overflow_duration = total_duration - max_duration
+            if overflow_duration > 0:
+                stop = True
+                action = VibeFrame(
+                    duration=action.duration - overflow_duration,
+                    intensity=action.intensity,
+                    targets=action.targets,
+                    mode=action.mode,
+                )
 
             if action.duration > 0:
                 vibes.append(action)

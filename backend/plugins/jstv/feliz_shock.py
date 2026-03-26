@@ -1,8 +1,9 @@
 from dataclasses import dataclass
+import os
 
 from app.connectors.pishock import (
     PiShockConnector, ShockFrame, ShockMode,
-    parse_shocks, MAX_INTENSITY,
+    parse_shocks,
 )
 from app.db.enums import AccessLevel
 from app.events import jstv as evjstv
@@ -14,16 +15,20 @@ from app.handlers.jstv.events import JSTVEventHandler, JSTVEventHandlerSettings
 # ==============================================================================
 # Config
 
-COST_PER_SECOND = 30.0
-COST_PER_INTENSITY = 3.0
+MAX_INTENSITY = int(os.getenv("PISHOCK_MAX_INTENSITY", 10))
+MAX_DURATION = float(os.getenv("PISHOCK_MAX_DURATION", 2.0))
+MAX_DELAY = float(os.getenv("PISHOCK_MAX_DELAY", 60.0))
 
-TIP_DURATION_PER_TOKEN = 0.01
-TIP_START_DURATION = 0.3
-TIP_MAX_DURATION = 1
+COST_PER_SECOND = float(os.getenv("PISHOCK_COST_PER_SECOND", 30.0))
+COST_PER_INTENSITY = float(os.getenv("PISHOCK_COST_PER_INTENSITY", 3.0))
 
-TIP_INTENSITY_PER_TOKEN = 1
-TIP_START_INTENSITY = 0
-TIP_MAX_INTENSITY = min(50, MAX_INTENSITY)
+TIP_DURATION_PER_TOKEN = float(os.getenv("PISHOCK_TIP_DURATION_PER_TOKEN", 0.01))
+TIP_START_DURATION = float(os.getenv("PISHOCK_TIP_START_DURATION", 0.3))
+TIP_MAX_DURATION = float(os.getenv("PISHOCK_TIP_MAX_DURATION", 1.0))
+
+TIP_INTENSITY_PER_TOKEN = float(os.getenv("PISHOCK_TIP_INTENSITY_PER_TOKEN", 1.0))
+TIP_START_INTENSITY = int(os.getenv("PISHOCK_TIP_START_INTENSITY", 1))
+TIP_MAX_INTENSITY = min(int(os.getenv("PISHOCK_TIP_MAX_INTENSITY", 1)), MAX_INTENSITY)
 
 
 # ==============================================================================
@@ -65,16 +70,22 @@ class ShockCommand(JSTVCommand[None, Cache]):
             await ctx.reply("No shockers available")
             return False
 
-        limit = bool(
-            ctx.message and not ctx.message.isFake
-            and not ctx.viewer.is_streamer  # Don't limit the streamer
-        )
+        parse_kwargs = {}
+        if (
+            ctx.message and
+            not ctx.message.isFake and
+            not ctx.viewer.is_streamer  # Don't limit the streamer
+        ):
+            parse_kwargs["max_intensity"] = MAX_INTENSITY
+            parse_kwargs["max_duration"] = MAX_DURATION
+            parse_kwargs["max_delay"] = MAX_DELAY
 
         try:
             if not ctx.argument:
                 raise ValueError
 
-            shocks = parse_shocks(ctx.argument, limit=limit)
+            shocks = parse_shocks(ctx.argument, **parse_kwargs)
+
         except ValueError as e:
             errmsg = str(e)
             errmsg += "; " if errmsg else ""
@@ -153,7 +164,7 @@ class ShockOnTipEventHandler(JSTVEventHandler[evjstv.JSTVTipped]):
         duration = min(duration, TIP_MAX_DURATION)
 
         intensity = TIP_START_INTENSITY + tip_amount * TIP_INTENSITY_PER_TOKEN
-        intensity = min(intensity, TIP_MAX_INTENSITY)
+        intensity = round(min(intensity, TIP_MAX_INTENSITY))
 
         if duration <= 0 or intensity <= 0:
             return False

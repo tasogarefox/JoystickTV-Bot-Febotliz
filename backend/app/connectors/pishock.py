@@ -27,10 +27,6 @@ semaphore = asyncio.Semaphore(5)  # Limit concurrent web requests
 # ==============================================================================
 # Config
 
-MAX_INTENSITY = 20
-MAX_DURATION = 2
-MAX_WARNING_DELAY = 60
-
 WEB_TIMEOUT = 10
 
 USERNAME = os.getenv("PISHOCK_USERNAME")
@@ -195,7 +191,9 @@ class ShockGroup:
 def parse_shocks(
     vibestr: str,
     *,
-    limit: bool = True,
+    max_intensity: int = 100,
+    max_duration: float = 20.0,
+    max_delay: float = 60.0,
 ) -> tuple["ShockFrame", ...]:
     NAME_MODE_MAP = {
         "vibrate": ShockMode.Vibrate,
@@ -303,9 +301,9 @@ def parse_shocks(
 
     frame = ShockFrame(
         mode,
-        min(duration, MAX_DURATION if limit else 20),
-        min(intensity, MAX_INTENSITY if limit else 100),
-        min(warning or 0, MAX_WARNING_DELAY),
+        min(duration, max_duration),
+        min(intensity, max_intensity),
+        min(warning or 0, max_delay),
     )
 
     return (frame,)

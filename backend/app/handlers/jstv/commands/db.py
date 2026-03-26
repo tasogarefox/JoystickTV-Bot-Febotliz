@@ -1,5 +1,6 @@
 from typing import Any, Collection, Mapping, cast
 from dataclasses import dataclass, field
+import math
 from datetime import datetime
 import logging
 
@@ -427,7 +428,7 @@ def calc_total_cost(
     base_cost: int,
     variable_costs: dict[str, float],
 ) -> int:
-    return max(0, int(base_cost + sum(variable_costs.values())))
+    return max(0, math.ceil(base_cost + sum(variable_costs.values())))
 
 def format_command_costs(
     base_cost: int,
