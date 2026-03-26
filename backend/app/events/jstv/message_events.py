@@ -170,7 +170,7 @@ class JSTVMessage(JSTVLoggedModel):
     def shortText(self) -> str:
         return self.getShortText()
 
-    def getShortText(self, maxlen: int = 40) -> str:
+    def getShortText(self, maxlen: int = 100) -> str:
         text = self.text
         if len(text) > maxlen:
             text = text[:maxlen-3] + "..."
