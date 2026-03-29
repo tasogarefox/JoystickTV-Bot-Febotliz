@@ -43,7 +43,7 @@ def parse_vibes(
 
     # Previous/starting values (uses class defaults if not specified)
     prev_intensities: tuple[float, ...] = ()
-    prev_duration: float = VibeFrame.duration
+    prev_duration: float = 30
     prev_devices: tuple[str, ...] = ()
 
     # Values for current action
