@@ -39,7 +39,7 @@ class VibeCommand(JSTVCommand[Any, Cache]):
     tags = frozenset({HandlerTags.nsfw})
 
     settings = JSTVCommandSettings(
-        aliases = ("vibe",),
+        aliases = ("vibe", "buzz"),
         min_access_level=AccessLevel.viewer,
     )
 
