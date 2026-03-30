@@ -161,7 +161,7 @@ def parse_vibes(
             cur_devices.append(arg)
             continue
 
-        elif arg.endswith("%"):  # This is an amount in percent
+        elif arg.endswith("%"):  # This is an intensity in percent
             if cur_intensities is not None:
                 flush_cur_action()
 
@@ -768,7 +768,7 @@ class ButtplugConnector(BaseConnector):
             await vibegraph.bcast_update_devices(devices)
         return devices
 
-    async def _vibe(self, device_names: Collection[str], amount: float):
+    async def _vibe(self, device_names: Collection[str], intensity: float):
         if not device_names:
             return
 
@@ -778,6 +778,6 @@ class ButtplugConnector(BaseConnector):
 
             for actuator in device.actuators:
                 try:
-                    await actuator.command(amount)
+                    await actuator.command(intensity)
                 except DisconnectedError:
                     pass
