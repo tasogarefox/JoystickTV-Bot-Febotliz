@@ -16,7 +16,6 @@ from app.handlers.jstv.events import JSTVEventHandler, JSTVEventHandlerSettings
 # ==============================================================================
 # Config
 
-ENFORCE_DEVICES_AVAILABLE = True
 OVERRIDE_VIBES = True
 
 MAX_DURATION = float(os.getenv("BUTTPLUG_MAX_DURATION", 120.0))
@@ -62,7 +61,7 @@ class VibeCommand(JSTVCommand[Any, Cache]):
             await ctx.reply("Intiface not connected")
             return False
 
-        if not buttplug.has_devices and ENFORCE_DEVICES_AVAILABLE:
+        if not buttplug.has_devices:
             await ctx.reply("No vibrators available")
             return False
 

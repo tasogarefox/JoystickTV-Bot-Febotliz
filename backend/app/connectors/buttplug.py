@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from contextlib import asynccontextmanager
 import os
 import asyncio
-import re
 import random
 from datetime import datetime, timedelta
 
@@ -20,6 +19,7 @@ from app.connector import ConnectorMessage, ConnectorManager, BaseConnector
 # ==============================================================================
 # Config
 
+ADD_FAKE_DEVICE = False  # Add fake device for testing
 CHAT_VIBE_INFO = False
 VIBE_CHECK_INTERVAL = 0.1
 
@@ -32,6 +32,65 @@ URL = WS_HOST
 
 # ==============================================================================
 # Functions
+
+def _parse_value_float(
+    source: str,
+    *,
+    name: str,
+    suffix: str = "",
+) -> float:
+    if suffix and source.endswith(suffix):
+        source = source[:-len(suffix)]
+
+    try:
+        return float(source)
+    except ValueError:
+        raise ValueError(f"Invalid {name} value {source!r}")
+
+def _parse_value_range(
+    source: str,
+    *,
+    name: str,
+    suffix: str = "",
+) -> float:
+    min_part, _, max_part = source.partition("-")
+
+    value = _parse_value_float(min_part, name=name, suffix=suffix)
+    if not max_part:
+        return value
+
+    max_value = _parse_value_float(max_part, name=name, suffix=suffix)
+
+    return random.uniform(value, max_value)
+
+def _parse_value_ramps(
+    source: str,
+    prev_value: float | None = None,
+    *,
+    name: str,
+    suffix: str = "",
+) -> list[float]:
+    values = []
+
+    parts = source.split("..")
+    if not parts:
+        raise ValueError(f"Invalid empty {name} value")
+
+    for i, part in enumerate(parts):
+        if part == "":  # Leading ".."
+            if i != 0:
+                raise ValueError(f"Invalid empty {name} segment")
+
+            if prev_value is None:
+                raise ValueError(f"Cannot start {name} with '..' without previous value")
+
+            values.append(prev_value)
+            continue
+
+        value = _parse_value_range(part, name=name, suffix=suffix)
+        values.append(value)
+
+    return values
 
 def parse_vibes(
     vibestr: str,
@@ -145,7 +204,7 @@ def parse_vibes(
 
         if not arg[0].isdigit() and arg[0] != ".":  # This is a device name
             # DISABLED: The following line disables the use of device names.
-            raise ValueError(f"Invalid argument: {arg}")
+            raise ValueError(f"Invalid argument {arg!r}")
 
             arg_lower = arg.lower()
             # NOTE: Devices never flush, instead they are grouped together.
@@ -161,72 +220,34 @@ def parse_vibes(
             cur_devices.append(arg)
             continue
 
-        elif arg.endswith("%"):  # This is an intensity in percent
+        elif arg.endswith("%"):  # This is an intensity in percent:
             if cur_intensities is not None:
                 flush_cur_action()
 
             try:
-                cur_intensities = [int(arg[:-1]) / 100]
-                continue
-            except ValueError:
-                pass
+                values = _parse_value_ramps(
+                    arg,
+                    prev_intensities[-1] if prev_intensities else None,
+                    name="intensity",
+                    suffix="%",
+                )
+            except ValueError as e:
+                raise ValueError(f"{e}; in {arg!r}")
 
-            m = re.fullmatch(r'(\d+)%?-(\d+)%', arg)
-            if m:
-                low = int(m.group(1)) / 100
-                high = int(m.group(2)) / 100
-                cur_intensities = [random.uniform(low, high)]
-                continue
-
-            m = re.fullmatch(r'(?:\d+%?)?(?:\.{2,}\d+%?)+', arg)
-            if m:
-                cur_intensities = []
-
-                parts = arg.split("..")
-                for i, part in enumerate(parts):
-                    if part == "":
-                        # Leading ".."
-                        if i == 0:
-                            if not prev_intensities:
-                                raise ValueError("Cannot start with '..' without previous intensities")
-
-                            cur_intensities.append(prev_intensities[-1])
-                            continue
-
-                        raise ValueError(f"Invalid empty percent segment in: {arg}")
-
-                    if part.endswith('%'):
-                        part = part[:-1]
-
-                    try:
-                        value = int(part) / 100
-                    except ValueError:
-                        raise ValueError(f"Invalid percent value: {part}")
-
-                    cur_intensities.append(value)
-
-                continue
-
-            raise ValueError(f"Invalid percent format: {arg}")
+            cur_intensities = [x / 100 for x in values]
 
         elif arg.endswith("s"):  # This is a time
             if cur_duration is not None:
                 flush_cur_action()
 
             try:
-                cur_duration = float(arg[:-1])
-                continue
-            except ValueError:
-                pass
-
-            m = re.fullmatch(r'((?:\d+?\.)?\d+)s?-((?:\d+?\.)?\d+)s', arg)
-            if m:
-                low = float(m.group(1))
-                high = float(m.group(2) or low)
-                cur_duration = random.uniform(low, high)
-                continue
-
-            raise ValueError(f"Invalid time format: {arg}")
+                cur_duration = _parse_value_range(
+                    arg,
+                    name="time",
+                    suffix="s",
+                )
+            except ValueError as e:
+                raise ValueError(f"{e}; in {arg!r}")
 
         elif any(arg.endswith(x) for x in "xr"):  # Repeat the last section
             # Note: If current section is empty, the previous section will be used instead
@@ -241,7 +262,7 @@ def parse_vibes(
                 try:
                     repeat = int(arg[:-1]) - 1
                 except ValueError:
-                    raise ValueError(f"Invalid repeat format: {arg}")
+                    raise ValueError(f"Invalid repeat format {arg!r}")
 
             for _ in range(min(100, repeat)):
                 sections.append(prev_section)
@@ -257,7 +278,7 @@ def parse_vibes(
                 try:
                     duration = int(arg[:-1]) - 1
                 except ValueError:
-                    raise ValueError(f"Invalid duration format: {arg}")
+                    raise ValueError(f"Invalid duration format {arg!r}")
                 duration = max(1, duration)
 
             old_section = sections.pop()
@@ -265,7 +286,7 @@ def parse_vibes(
             if old_duration <= 0 or duration / old_duration < 0.01:
                 ValueError(
                     f"Section duration ({old_duration}s) is too short for "
-                    "requested repeat duration ({duration}s)"
+                    f"requested repeat duration ({duration}s)"
                 )
 
             time = 0
@@ -297,7 +318,7 @@ def parse_vibes(
                 sections.append(tuple(new_section))
 
         else:  # Invalid argument
-            raise ValueError(f"Invalid argument: {arg}")
+            raise ValueError(f"Invalid argument {arg!r}")
 
     else:
         # Flush the last frame and section, if any
@@ -543,7 +564,7 @@ class ButtplugConnector(BaseConnector):
 
     @property
     def has_devices(self) -> bool:
-        return bool(self.client.devices)
+        return bool(self.client.devices) or ADD_FAKE_DEVICE
 
     async def enqueue(self, vibe: VibeGroup | VibeFrame) -> None:
         group = vibe if isinstance(vibe, VibeGroup) else VibeGroup((vibe,))
@@ -762,10 +783,15 @@ class ButtplugConnector(BaseConnector):
     async def _update_devices(self) -> set[str]:
         from app.routes.ws import vibegraph
         devices = set(x.name for x in self.client.devices.values())
+
+        if ADD_FAKE_DEVICE:
+            devices.add("Fake Device")
+
         if devices != self._devices:
             self._devices = devices
             self.logger.info("Devices updated: %s", devices)
             await vibegraph.bcast_update_devices(devices)
+
         return devices
 
     async def _vibe(self, device_names: Collection[str], intensity: float):

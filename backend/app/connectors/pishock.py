@@ -233,17 +233,17 @@ def parse_shocks(
 
         if not arg[0].isdigit():  # This is the mode
             if mode is not None:
-                raise ValueError(f"Currently only one mode can be specified: {arg}")
+                raise ValueError(f"Currently only one mode can be specified {arg!r}")
 
             try:
                 mode = NAME_MODE_MAP[arg.casefold()]
                 continue
             except KeyError:
-                raise ValueError(f"Invalid mode: {arg}")
+                raise ValueError(f"Invalid mode {arg!r}")
 
         elif arg.endswith("%"):  # This is the intensity in percent
             if intensity is not None:
-                raise ValueError(f"Currently only one intensity can be specified: {arg}")
+                raise ValueError(f"Currently only one intensity can be specified {arg!r}")
 
             try:
                 intensity = int(arg[:-1])
@@ -251,18 +251,18 @@ def parse_shocks(
             except ValueError:
                 pass
 
-            m = re.fullmatch(r'(\d+)%?-(\d+)%', arg)
+            m = re.fullmatch(r"(\d+)%?-(\d+)%", arg)
             if m:
                 low = int(m.group(1))
                 high = int(m.group(2) or low)
                 intensity = random.randint(low, high)
                 continue
 
-            raise ValueError(f"Invalid intensity format: {arg}")
+            raise ValueError(f"Invalid intensity format {arg!r}")
 
         elif arg.endswith("s"):  # This is the duration in seconds
             if duration is not None:
-                raise ValueError(f"Currently only one duration can be specified: {arg}")
+                raise ValueError(f"Currently only one duration can be specified {arg!r}")
 
             try:
                 duration = float(arg[:-1])
@@ -270,18 +270,18 @@ def parse_shocks(
             except ValueError:
                 pass
 
-            m = re.fullmatch(r'((?:\d+?\.)?\d+)s?-((?:\d+?\.)?\d+)s', arg)
+            m = re.fullmatch(r"((?:\d+?\.)?\d+)s?-((?:\d+?\.)?\d+)s", arg)
             if m:
                 low = float(m.group(1))
                 high = float(m.group(2) or low)
                 duration = random.uniform(low, high)
                 continue
 
-            raise ValueError(f"Invalid duration format: {arg}")
+            raise ValueError(f"Invalid duration format {arg!r}")
 
         # elif arg.endswith("w"):  # This is the duration after warning in seconds
         #     if warning is not None:
-        #         raise ValueError(f"Currently only one warning duration can be specified: {arg}")
+        #         raise ValueError(f"Currently only one warning duration can be specified {arg!r}")
 
         #     try:
         #         warning = float(arg[:-1])
@@ -289,17 +289,17 @@ def parse_shocks(
         #     except ValueError:
         #         pass
 
-        #     m = re.fullmatch(r'((?:\d+?\.)?\d+)s?-((?:\d+?\.)?\d+)s', arg)
+        #     m = re.fullmatch(r"((?:\d+?\.)?\d+)s?-((?:\d+?\.)?\d+)s", arg)
         #     if m:
         #         low = float(m.group(1))
         #         high = float(m.group(2) or low)
         #         warning = random.uniform(low, high)
         #         continue
 
-        #     raise ValueError(f"Invalid warning format: {arg}")
+        #     raise ValueError(f"Invalid warning format {arg!r}")
 
         else:  # Invalid argument
-            raise ValueError(f"Invalid argument: {arg}")
+            raise ValueError(f"Invalid argument {arg!r}")
 
     if mode is None:
         mode = ShockMode.Shock
@@ -500,13 +500,13 @@ class PiShockConnector(WebSocketConnector):
     			"Target": f"c{device.clientId}-ops",  # for example c{clientId}-ops or c{clientId}-sops-{sharecode}
     			"Body": {
     				"id": shocker.shockerId,  # shocker ID,
-    				"m": cmd.mode.value,  # 'v', 's', 'b', or 'e'
+    				"m": cmd.mode.value,  # "v", "s", "b", or "e"
     				"i": cmd.intensity,  # Could be vibIntensity, shockIntensity or a randomized value
     				"d": cmd.duration_ms,  # Calculated duration in milliseconds
     				"r": True,  # true or false, always set to true.
     				"l": {
     					"u": user_id,  # User ID from first step
-    	                "ty": "api",  # 'sc' for ShareCode, 'api' for Normal
+    	                "ty": "api",  # "sc" for ShareCode, "api" for Normal
     	                "w": False,  # true or false, if this is a warning vibrate, it affects the logs
     	                "h": False,  # true if button is held or continuous is being sent.
     	                "o": self.logger.name,  # send to change the name shown in the logs.
