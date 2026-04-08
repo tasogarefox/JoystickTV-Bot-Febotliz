@@ -153,7 +153,11 @@ class JoystickTVConnector(WebSocketConnector):
         async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_disconnected(db)
 
-    async def on_message(self, data: dict[Any, Any]):
+    async def on_message(self, data: Any):
+        if not isinstance(data, dict):
+            self.logger.warning("Received non-dict message: %r", data)
+            return
+
         async with AsyncSessionMaker.begin() as db:
             await jstv_dbstate.on_server_message(db)
 

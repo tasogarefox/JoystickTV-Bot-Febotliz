@@ -171,7 +171,11 @@ class WarudoConnector(WebSocketConnector):
 
         return False
 
-    async def on_message(self, data: dict[Any, Any]):
+    async def on_message(self, data: Any):
+        if not isinstance(data, dict):
+            self.logger.warning("Received non-dict message: %r", data)
+            return
+
         self.logger.info("Received: %s", data)
 
     async def send_action(self, action: str, data: Any = None) -> None:

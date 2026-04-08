@@ -28,7 +28,7 @@ TIP_MAX_DURATION = float(os.getenv("PISHOCK_TIP_MAX_DURATION", 1.0))
 
 TIP_INTENSITY_PER_TOKEN = float(os.getenv("PISHOCK_TIP_INTENSITY_PER_TOKEN", 1.0))
 TIP_START_INTENSITY = int(os.getenv("PISHOCK_TIP_START_INTENSITY", 1))
-TIP_MAX_INTENSITY = min(int(os.getenv("PISHOCK_TIP_MAX_INTENSITY", 1)), MAX_INTENSITY)
+TIP_MAX_INTENSITY = min(int(os.getenv("PISHOCK_TIP_MAX_INTENSITY", 100)), MAX_INTENSITY)
 
 
 # ==============================================================================
@@ -51,6 +51,9 @@ class ShockCommand(JSTVCommand[None, Cache]):
         channel_cooldown=10,
     )
 
+    last_message: evjstv.JSTVMessage | None = None
+    """Last message that was successfully handled by this command."""
+
     @classmethod
     def usage(cls, alias: str) -> str:
         return (
@@ -72,7 +75,7 @@ class ShockCommand(JSTVCommand[None, Cache]):
 
         parse_kwargs = {}
         if (
-            ctx.message and
+            ctx.message is not None and
             not ctx.message.isFake and
             not ctx.viewer.is_streamer  # Don't limit the streamer
         ):
@@ -114,7 +117,10 @@ class ShockCommand(JSTVCommand[None, Cache]):
             await ctx.reply(f"Failed to send shock command")
             return False
 
-        await ctx.reply(f"Sent shock command: {shock}")
+        if ctx.message is not None:
+            cls.last_message = ctx.message
+
+        # await ctx.reply(f"Sent shock command: {shock}")
         return True
 
     @classmethod
@@ -152,6 +158,10 @@ class ShockOnTipEventHandler(JSTVEventHandler[evjstv.JSTVTipped]):
 
     @classmethod
     async def handle(cls, ctx) -> bool:
+        # Skip if already handled
+        if ctx.message is ShockCommand.last_message:
+            return False
+
         pishock = ctx.connector_manager.get(PiShockConnector)
 
         if not pishock or not pishock.devices:

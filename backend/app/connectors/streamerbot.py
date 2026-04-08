@@ -55,7 +55,11 @@ class StreamerBotConnector(WebSocketConnector):
 
         return False
 
-    async def on_message(self, data: dict[Any, Any]):
+    async def on_message(self, data: Any):
+        if not isinstance(data, dict):
+            self.logger.warning("Received non-dict message: %r", data)
+            return
+
         if 'request' in data:
             if data["request"] == "Hello":
                 self.logger.info("Received Hello")

@@ -418,6 +418,10 @@ class BoundViewerCommand:
             cd_viewer.last_exec_argument = ctx.argument
             cd_viewer.last_exec_cost = total_cost
 
+            if total_cost:
+                str_costs = format_command_costs(settings.base_cost, var_costs)
+                await ctx.reply(f"used command {alias} for {str_costs}")
+
             return True
 
 

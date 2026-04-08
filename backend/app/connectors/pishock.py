@@ -467,7 +467,11 @@ class PiShockConnector(WebSocketConnector):
     async def on_error(self, error: Exception) -> None:
         return await super().on_error(error)
 
-    async def on_message(self, data: dict[Any, Any]):
+    async def on_message(self, data: Any):
+        if not isinstance(data, dict):
+            self.logger.warning("Received non-dict message: %r", data)
+            return
+
         self.logger.info("Received: %s", data)
 
     async def send_shock(self, cmd: ShockFrame) -> bool:
@@ -515,4 +519,13 @@ class PiShockConnector(WebSocketConnector):
             } for device, shocker in targets],
         }
 
-        return await self.sendnow(data)
+        if not await self.sendnow(data):
+            return False
+
+        # TODO: Trigger this through an event somehow
+        from app.connectors.warudo import WarudoConnector
+        warudo = self.manager.get(WarudoConnector)
+        if warudo:
+            await warudo.send_action("OnShocked", cmd.intensity)
+
+        return True

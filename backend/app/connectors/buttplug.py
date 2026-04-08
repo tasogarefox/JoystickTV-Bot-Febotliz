@@ -1,4 +1,7 @@
-from typing import NamedTuple, ClassVar, Any, Coroutine, Collection, Iterator, Iterable
+from typing import (
+    NamedTuple, ClassVar, Any, Union,
+    Coroutine, Collection, Iterator, Iterable,
+)
 from enum import IntEnum
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
@@ -9,11 +12,12 @@ from datetime import datetime, timedelta
 
 from buttplug import (
     Client, WebsocketConnector, ProtocolSpec,
-    ServerNotFoundError, DisconnectedError, ConnectorError,
+    ServerNotFoundError, DisconnectedError, ConnectorError, DeviceServerError,
 )
 
-from app.utils.asyncio import async_select
+from app.settings import getenv_list
 from app.connector import ConnectorMessage, ConnectorManager, BaseConnector
+from app.utils.asyncio import async_select
 
 
 # ==============================================================================
@@ -25,6 +29,8 @@ VIBE_CHECK_INTERVAL = 0.1
 
 WS_HOST = os.getenv("BUTTPLUG_WS_HOST")
 assert WS_HOST, "Missing environment variable: BUTTPLUG_WS_HOST"
+
+DEVICE_BLACKLIST = getenv_list("BUTTPLUG_DEVICE_BLACKLIST")
 
 NAME = "Buttplug"
 URL = WS_HOST
@@ -498,7 +504,7 @@ class ButtplugConnector(BaseConnector):
 
     client: Client
 
-    _devices: set[str]
+    _device_cache: set[str]
 
     _vibe_queue: asyncio.Queue[VibeGroup]
     _cur_vibe_group: VibeGroup | None = None
@@ -507,7 +513,7 @@ class ButtplugConnector(BaseConnector):
     def __init__(self, manager: ConnectorManager):
         super().__init__(manager)
         self.client = self._create_client()
-        self._devices = set()
+        self._device_cache = set()
         self._vibe_queue = asyncio.Queue()
         self._delayed_until = datetime.now()
 
@@ -562,9 +568,19 @@ class ButtplugConnector(BaseConnector):
         else:
             return await super().on_error(error)
 
+    def _get_devices(self) -> set[str]:
+        return set(
+            x.name
+            for x in self.client.devices.values()
+            if x.name not in DEVICE_BLACKLIST
+        )
+
     @property
     def has_devices(self) -> bool:
-        return bool(self.client.devices) or ADD_FAKE_DEVICE
+        return any(
+            x.name not in DEVICE_BLACKLIST
+            for x in self.client.devices.values()
+        ) or ADD_FAKE_DEVICE
 
     async def enqueue(self, vibe: VibeGroup | VibeFrame) -> None:
         group = vibe if isinstance(vibe, VibeGroup) else VibeGroup((vibe,))
@@ -596,9 +612,6 @@ class ButtplugConnector(BaseConnector):
                 "channelId": group.channel_id or "",
             })
 
-    def _get_devices(self) -> set[str]:
-        return set(x.name for x in self.client.devices.values())
-
     async def main_loop(self):
         await async_select(
             asyncio.create_task(self._scan_loop()),
@@ -610,7 +623,7 @@ class ButtplugConnector(BaseConnector):
         await self.client.start_scanning()
         await asyncio.sleep(10)
         await self.client.stop_scanning()
-        await self._update_devices()
+        await self._update_device_cache()
         self.logger.info("Device-scan complete")
 
         shutdown = False
@@ -623,7 +636,7 @@ class ButtplugConnector(BaseConnector):
             if shutdown:
                 break
 
-            await self._update_devices()
+            await self._update_device_cache()
 
     async def _vibe_loop(self):
         from app.routes.ws import vibegraph
@@ -647,8 +660,8 @@ class ButtplugConnector(BaseConnector):
             if not group:
                 continue
 
-            await self._update_devices()
-            await vibegraph.bcast_update_devices(self._devices)
+            await self._update_device_cache()
+            await vibegraph.bcast_update_devices(self._device_cache)
             await vibegraph.bcast_set_group(group)
 
             for i, vibe in enumerate(x for x in group.frames if x):
@@ -780,15 +793,15 @@ class ButtplugConnector(BaseConnector):
         done = await async_select(tshutdown, tsleep)
         return tshutdown in done
 
-    async def _update_devices(self) -> set[str]:
+    async def _update_device_cache(self) -> set[str]:
         from app.routes.ws import vibegraph
-        devices = set(x.name for x in self.client.devices.values())
+        devices = self._get_devices()
 
         if ADD_FAKE_DEVICE:
             devices.add("Fake Device")
 
-        if devices != self._devices:
-            self._devices = devices
+        if devices != self._device_cache:
+            self._device_cache = devices
             self.logger.info("Devices updated: %s", devices)
             await vibegraph.bcast_update_devices(devices)
 
@@ -805,5 +818,500 @@ class ButtplugConnector(BaseConnector):
             for actuator in device.actuators:
                 try:
                     await actuator.command(intensity)
-                except DisconnectedError:
+                except (DisconnectedError, DeviceServerError):
                     pass
+
+
+# ==============================================================================
+# Buttplug Proxy Connector
+
+import itertools
+import json
+import websockets
+
+from app.connector import WebSocketConnector
+
+IntifaceMessage = list[dict[str, Any]]
+
+INTIFACE_URL = "ws://127.0.0.1:12346"
+PROXY_HOST = "127.0.0.1"
+PROXY_PORT = 12345  # clients connect here instead
+
+class ButtplugProxyClients:
+    _clients: dict[int | None, "ClientInfo"]
+    """Map client ID to client info."""
+
+    _messages: dict[int, "MessageInfo"]
+    """Map message ID to client message info."""
+
+    _internal_messages: dict[int, "MessageInfo"]
+    """Map message ID to message info for internal messages."""
+
+    __message_id: itertools.count
+
+    def __init__(self):
+        self._clients = {}
+        self._messages = {}
+        self._internal_messages = {}
+
+        self.__message_id = itertools.count(1)
+
+    @staticmethod
+    def get_id(client: websockets.ServerConnection) -> int:
+        return id(client)
+
+    def next_message_id(self) -> int:
+        return next(self.__message_id)
+
+    def iter_clients(self) -> Iterator["ClientInfo"]:
+        return iter(self._clients.values())
+
+    def register_client(self, client: websockets.ServerConnection) -> int:
+        client_id = self.get_id(client)
+
+        self._clients[client_id] = self.ClientInfo(
+            client=client,
+            internal_msg_ids=set(),
+        )
+
+        return client_id
+
+    def cleanup_client(self, client: websockets.ServerConnection) -> None:
+        client_id = self.get_id(client)
+
+        client_info = self._clients.pop(client_id, None)
+        if client_info is None:
+            return
+
+        for internal_id in client_info.internal_msg_ids:
+            self._messages.pop(internal_id, None)
+
+    def register_message(
+        self,
+        client: websockets.ServerConnection,
+        client_msg_id: int,
+    ) -> int:
+        client_id = self.get_id(client)
+        client_info = self._clients[client_id]
+
+        internal_id = self.next_message_id()
+
+        client_info.internal_msg_ids.add(internal_id)
+
+        self._messages[internal_id] = self.MessageInfo(
+            client_id=client_id,
+            client_msg_id=client_msg_id,
+        )
+
+        return internal_id
+
+    def pop_message(
+        self,
+        internal_msg_id: int,
+    ) -> Union[
+        tuple["ClientInfo", "MessageInfo"],
+        tuple[None, None],
+    ]:
+        msg_info = self._messages.pop(internal_msg_id, None)
+        if msg_info is None:
+            return None, None
+
+        assert msg_info.client_id is not None
+
+        client_info = self._clients.get(msg_info.client_id, None)
+        if client_info is None:
+            return None, None
+
+        client_info.internal_msg_ids.discard(internal_msg_id)
+
+        return client_info, msg_info
+
+    def register_internal_message(self) -> int:
+        internal_id = self.next_message_id()
+
+        self._internal_messages[internal_id] = self.MessageInfo(
+            client_id=None,
+            client_msg_id=internal_id,
+        )
+
+        return internal_id
+
+    def pop_internal_message(self, internal_id: int) -> "MessageInfo | None":
+        return self._internal_messages.pop(internal_id, None)
+
+    class ClientInfo(NamedTuple):
+        client: websockets.ServerConnection  # client itself
+        internal_msg_ids: set[int]  # pending messages
+
+    class MessageInfo(NamedTuple):
+        client_id: int | None  # id(client) for forwarded messages or None for own messages
+        client_msg_id: int  # client message ID
+
+class ButtplugProxyConnector(WebSocketConnector):
+    NAME: ClassVar[str] = "ButtplugProxy"
+
+    clients: ButtplugProxyClients
+
+    def __init__(self, manager: ConnectorManager):
+        super().__init__(manager)
+        self.clients = ButtplugProxyClients()
+
+    def _get_url(self) -> str:
+        return INTIFACE_URL
+
+    async def _request_server_info(self) -> None:
+        data = [{
+            "RequestServerInfo": {
+                "ClientName": self.logger.name,
+                "MessageVersion": 3,
+                "Id": self.clients.register_internal_message(),
+            },
+        }]
+
+        self.logger.debug("[P -> S]: %s", data)
+        await self.sendnow(data)
+
+    def next_message_id(self) -> int:
+        return self.clients.next_message_id()
+
+    async def on_connected(self) -> None:
+        await super().on_connected()
+        await self._request_server_info()
+
+    async def main_loop(self) -> None:
+        await async_select(
+            asyncio.create_task(super().main_loop()),
+            asyncio.create_task(self._server_loop()),
+        )
+
+    async def _server_loop(self) -> None:
+        async with websockets.serve(self.handle_client, PROXY_HOST, PROXY_PORT):
+            self.logger.info((
+                "Buttplug proxy listening on %s:%d"
+            ), PROXY_HOST, PROXY_PORT)
+
+            await self._shutdown.wait()
+
+    async def talk_receive(self, msg: ConnectorMessage) -> bool:
+        self.logger.info((
+            "Connector message received: %r, data: %s"
+        ), msg, msg.data)
+
+        return False
+
+    async def handle_client(self, ws_client: websockets.ServerConnection) -> None:
+        self.logger.info("Client connected")
+
+        self.clients.register_client(ws_client)
+
+        try:
+            async for msg in ws_client:
+                try:
+                    data = self._parse_message(msg)
+                    await self.on_client_message(ws_client, data)
+
+                except Exception:
+                    self.logger.exception((
+                        "Exception processing client message: %s"
+                    ), msg)
+
+        except websockets.ConnectionClosedError:
+            pass
+
+        except Exception:
+            self.logger.exception("Exception processing client")
+
+        finally:
+            self.clients.cleanup_client(ws_client)
+            self.logger.info("Client disconnected")
+
+    async def on_message(self, data: Any) -> None:
+        await self.on_server_message(data)
+
+    async def on_client_message(
+        self,
+        client: websockets.ServerConnection,
+        data: Any,
+    ) -> None:
+        if not isinstance(data, list):
+            self.logger.warning((
+                "Received non-list client message: %r"
+            ), data)
+            return
+
+        self.logger.debug(f"[C -> P] {data}")
+
+        forward_request: IntifaceMessage = []
+        immediate_reply: IntifaceMessage = []
+
+        for item in data:
+            if not isinstance(item, dict):
+                self.logger.warning((
+                    "Received non-dict client message item: %r"
+                ), item)
+                continue
+
+            reqtype: str
+            req: dict[str, Any]
+            for reqtype, req in item.items():
+                if not isinstance(req, dict):
+                    self.logger.warning((
+                        "Received non-dict client request: type=%r, item=%r"
+                    ), reqtype, req)
+                    continue
+
+                client_req_id = req.get("Id")
+                if not isinstance(client_req_id, int):
+                    self.logger.warning((
+                        "Received client request without ID: type=%r, item=%r"
+                    ), reqtype, req)
+                    continue
+
+                if reqtype == "RequestServerInfo":
+                    immediate_reply.append({
+                        "ServerInfo": {
+                            "Id": client_req_id,
+                            "MessageVersion": req.get("MessageVersion", 3),
+                            "MaxPingTime": 0,
+                            "ServerName": self.logger.name,
+                        },
+                    })
+
+                    self.logger.info("Received RequestServerInfo; ClientName: %s", req.get("ClientName"))
+
+                else:
+                    internal_req_id = self.clients.register_message(client, client_req_id)
+                    req["Id"] = internal_req_id
+                    forward_request.append({
+                        reqtype: req,
+                    })
+
+        if forward_request:
+            self.logger.debug("[P -> S]: %s", forward_request)
+            await self.sendnow(forward_request)
+
+        if immediate_reply:
+            self.logger.debug("[P -> C]: %s", immediate_reply)
+            msg = json.dumps(immediate_reply)
+            await client.send(msg)
+
+    async def on_server_message(self, data: Any) -> None:
+        if not isinstance(data, list):
+            self.logger.warning("Received non-list server message: %r", data)
+            return
+
+        self.logger.debug(f"[S -> P] {data}")
+
+        replies: dict[websockets.ServerConnection, IntifaceMessage] = {}
+        broadcast: IntifaceMessage = []
+
+        for item in data:
+            if not isinstance(item, dict):
+                self.logger.warning((
+                    "Received non-dict server message item: %r"
+                ), item)
+                continue
+
+            resptype: str
+            resp: dict[str, Any]
+            for resptype, resp in item.items():
+                if not isinstance(resp, dict):
+                    self.logger.warning((
+                        "Received non-dict server message response: type=%r, item=%r"
+                    ), resptype, resp)
+                    continue
+
+                internal_req_id = resp.get("Id")
+                if not isinstance(internal_req_id, int):
+                    self.logger.warning((
+                        "Received server response without or invalid ID: "
+                        "id=%r, type=%r, item=%r"
+                    ), internal_req_id, resptype, resp)
+                    continue
+
+                if internal_req_id == 0:
+                    # Broadcast
+
+                    broadcast.append({
+                        resptype: resp,
+                    })
+
+                    continue
+
+                client_info, msg_info = self.clients.pop_message(internal_req_id)
+                if client_info is not None and msg_info is not None:
+                    # Response for client
+
+                    assert msg_info.client_id is not None
+
+                    resp["Id"] = msg_info.client_msg_id
+                    replies.setdefault(client_info.client, []).append({
+                        resptype: resp,
+                    })
+
+                    continue
+
+                msg_info = self.clients.pop_internal_message(internal_req_id)
+                if msg_info is not None:
+                    # Response for proxy
+
+                    if resptype == "ServerInfo":
+                        self.logger.debug("Received server info: %s", resp)
+
+                    else:
+                        self.logger.warning((
+                            "Received unexpected server response: "
+                            "id=%r, type=%r, item=%r"
+                        ), internal_req_id, resptype, resp)
+
+                    continue
+
+                self.logger.warning((
+                    "Received unexpected server response: "
+                    "id=%r, type=%r, item=%r"
+                ), internal_req_id, resptype, resp)
+
+        for client, reply in replies.items():
+            self.logger.debug("[P -> C]: %s", reply)
+
+            for client, reply in replies.items():
+                try:
+                    msg = json.dumps(reply)
+                    await client.send(msg)
+                except websockets.ConnectionClosedError:
+                    self.logger.debug("Client closed, skipping reply")
+                except Exception as e:
+                    self.logger.exception("Failed to send message to client: %s", e)
+
+        if broadcast:
+            self.logger.debug("[P -> C]: %s", broadcast)
+
+            try:
+                msg = json.dumps(broadcast)
+            except Exception as e:
+                self.logger.exception("Failed to send message to client: %s", e)
+            else:
+                for client_info in self.clients.iter_clients():
+                    try:
+                        await client_info.client.send(msg)
+                    except websockets.ConnectionClosedError:
+                        self.logger.debug("Client closed, skipping broadcast")
+                    except Exception as e:
+                        self.logger.exception("Failed to broadcast to client: %s", e)
+
+
+# ==============================================================================
+# Buttplug Receiver Connector
+
+import re
+
+from app.connector import WebSocketConnector
+
+class ButtplugReceiverConnector(WebSocketConnector):
+    NAME: ClassVar[str] = "ButtplugReceiver"
+
+    MOD_INTENSITY: float = 0.5
+    MIN_INTENSITY: int = 1
+    MAX_INTENSITY: int = int(os.getenv("PISHOCK_MAX_INTENSITY", 10))
+    MAX_DURATION: float = float(os.getenv("PISHOCK_MAX_DURATION", 2.0))
+    MAX_DELAY: float = float(os.getenv("PISHOCK_MAX_DELAY", 60.0))
+
+    device_websocket: ClassVar[str] = "ws://127.0.0.1:54817"
+    device_code: ClassVar[str] = "FEBOTLIZ"
+    device_address: ClassVar[str] = device_code
+    device_identifier: ClassVar[str] = f"LVS-{device_code}"
+
+    _intensity: int = 0
+
+    @property
+    def handshake_package(self) -> dict[str, Any]:
+        return {
+            "identifier": self.device_identifier,
+            "address": self.device_address,
+            "version": 0,
+        }
+
+    @property
+    def intensity(self) -> int:
+        return self._intensity
+
+    def _get_url(self) -> str:
+        return self.device_websocket
+
+    async def _send_handshake(self) -> None:
+        await self.sendnow(self.handshake_package)
+        self.logger.info("Handshake Sent")
+
+    async def set_intensity(self, value: int) -> None:
+        value = min(max(value, 0), 100)
+
+        if value == self._intensity:
+            return
+
+        self._intensity = value
+
+        await self.on_intensity_changed(value)
+
+    async def on_connected(self) -> None:
+        await super().on_connected()
+        await self._send_handshake()
+
+    def _parse_message(self, message) -> Any:
+        return message
+
+    async def on_message(self, data: bytes) -> None:
+        if not isinstance(data, bytes):
+            self.logger.warning("Received non-bytes message: %r", data)
+            return
+
+        self.logger.info("Received: %s", data)
+
+        if b"DeviceType;" in data:
+            self.logger.info("Got device type")
+
+            # Lovense initialization request
+            await self.sendnow(f"{self.device_address}:0:{self.device_address};")
+
+        elif b"Battery;" in data:
+            self.logger.info("Got battery")
+
+            # Buttplug will wait for a response to Battery so just make something up.
+            await self.sendnow("90;")
+
+        else:
+            self.logger.info(f"Lovense command: {data}")
+
+            # If it's a vibrate message, get the vibrate level, which will be 0-20.
+            m = re.search(rb"Vibrate:([0-9]+)", data)
+            if m:
+                await self.set_intensity(round(int(m.group(1)) / 20 * 100))
+
+            # If we wanted to conform with the Lovense protocol we'd
+            # send "OK;" here, but Buttplug doesn't care.
+
+    async def on_intensity_changed(self, intensity: int) -> None:
+        if intensity <= 0:
+            return
+
+        from app.connectors.pishock import PiShockConnector, ShockFrame, ShockMode
+
+        tasks = []
+
+        buttplug = self.manager.get(ButtplugConnector)
+        if buttplug:
+            duration = 5
+            frame = VibeFrame.new_override(duration, intensity / 100)
+            tasks.append(buttplug.enqueue(frame))
+
+        pishock = self.manager.get(PiShockConnector)
+        if pishock:
+            shock_intensity = intensity * self.MOD_INTENSITY
+            shock_intensity = int(min(max(shock_intensity, self.MIN_INTENSITY), self.MAX_INTENSITY))
+
+            frame = ShockFrame(ShockMode.Shock, 0.3, shock_intensity)
+
+            self.logger.info("Converting vibe (intensity=%d) to shock: %s", intensity, frame)
+            tasks.append(pishock.send_shock(frame))
+
+        if tasks:
+            await asyncio.gather(*tasks)

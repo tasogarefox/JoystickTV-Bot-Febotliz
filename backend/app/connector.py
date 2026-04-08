@@ -49,7 +49,8 @@ class ConnectorMessage(NamedTuple):
     action: str  # The action to perform
     data: Any  # Any data
 
-    _counter = itertools.count(1)  # Used to generate unique message IDs
+    # Used to generate unique message IDs
+    __message_id = itertools.count(1)
 
     def __repr__(self):
         return f"<{type(self).__name__} #{self.id} {self.action} from {self.sender} to {self.receiver}>"
@@ -57,12 +58,12 @@ class ConnectorMessage(NamedTuple):
     @classmethod
     def make(cls, sender: str, receiver: str, action: str, data: Any):
         """Create a new message with a unique ID."""
-        return cls(cls.next_id(), sender, receiver, action, data)
+        return cls(cls.next_message_id(), sender, receiver, action, data)
 
     @classmethod
-    def next_id(cls):
+    def next_message_id(cls) -> int:
         """Get the next available message ID."""
-        return next(cls._counter)
+        return next(cls.__message_id)
 
 
 # ==============================================================================
@@ -346,6 +347,7 @@ class WebSocketConnector(BaseConnector):
 
     @abc.abstractmethod
     def _get_url(self) -> str:
+        """Return the URL to connect to."""
         ...
 
     def _create_connection(self) -> websockets.connect:
@@ -361,28 +363,29 @@ class WebSocketConnector(BaseConnector):
         if not self._ws:
             return
 
-        async for message in self._ws:
-            try:
-                data = json.loads(message)
-            except json.JSONDecodeError:
-                self.logger.exception("Invalid JSON: %s", message)
-                continue
+        try:
+            async for message in self._ws:
+                try:
+                    data = self._parse_message(message)
+                    await self.on_message(data)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.logger.exception("Exception processing WebSocket message")
 
-            try:
-                await self.on_message(data)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.logger.exception("Exception processing WebSocket message")
+        except websockets.ConnectionClosedError as e:
+            self.logger.warning("Connection closed in %s: %s", type(self).__name__, e)
 
-    async def on_message(self, data: dict[Any, Any]):
+    def _parse_message(self, message) -> Any:
+        """Parse a message from the WebSocket."""
+        return json.loads(message)
+
+    async def on_message(self, data: Any):
         """Override in subclasses; can send messages using manager.talkto()."""
         self.logger.info("Received: %s", data)
 
     async def on_error(self, error: Exception):
-        if isinstance(error, websockets.ConnectionClosedError):
-            self.logger.error("Connection closed in %s: %s", type(self).__name__, error)
-        elif isinstance(error, socket.gaierror):
+        if isinstance(error, socket.gaierror):
             self.logger.warning("Get Address Info error in %s: %s", type(self).__name__, error)
         elif isinstance(error, TimeoutError):
             self.logger.warning("Timeout in %s: %s", type(self).__name__, error)
@@ -402,6 +405,11 @@ class WebSocketConnector(BaseConnector):
         """Direct send to this connector."""
         if not self._connected or not self._ws:
             return False
-        await self._ws.send(json.dumps(data))
-        self.logger.info("Sent: %s", data)
+
+        if not isinstance(data, (str, bytes)):
+            data = json.dumps(data)
+
+        await self._ws.send(data)
+
+        self.logger.debug("Sent: %s", data)
         return True

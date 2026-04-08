@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 # Config
 
+MAX_POINTS: int = 2000
+"""Maximum points a viewer can have"""
+MAX_SUBSCRIBER_POINTS: int = 4000
+"""Maximum points a subscriber can have"""
+
 REWARD_INTERVAL: int = 300
 """Interval in seconds to reward watch time and points"""
 REWARD_POINTS_PER_INTERVAL: int = 10
@@ -65,14 +70,26 @@ def adjust_viewer_points(
     if amount == 0:
         return 0
 
+    elif amount < 0:
+        amount_clipped = max(amount, -viewer.points)
+
+    else:  # amount > 0
+        max_points = MAX_POINTS
+
+        if viewer.is_subscriber:
+            max_points = max(max_points, MAX_SUBSCRIBER_POINTS)
+
+        amount_clipped = min(amount, max(0, max_points - viewer.points))
+
     # Update viewer
-    viewer.points += amount
+    viewer.points += amount_clipped
 
     logger.info((
-        "Adjusting points by %d for viewer #%d (user #%d, channel #%d); reason: %s"
-    ), amount, viewer.id, viewer.user_id, viewer.channel_id, reason)
+        "Adjusting points by %d (%d) for viewer #%d (user #%d, channel #%d)"
+        "; reason: %s"
+    ), amount_clipped, amount, viewer.id, viewer.user_id, viewer.channel_id, reason)
 
-    return amount
+    return amount_clipped
 
 def reward_viewer_watch_time(
     channel: Channel,

@@ -41,7 +41,7 @@ class AliasesCommand(JSTVCommand):
             )
 
         except (KeyError, ValueError) as e:
-            await ctx.reply(str(e), mention=True)
+            await ctx.reply(f"error: {e}", mention=True)
             return False
 
         await ctx.reply(f"Aliases: {', '.join(bound_cmd.aliases)}")

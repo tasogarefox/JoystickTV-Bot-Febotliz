@@ -7,7 +7,7 @@ from app.connectors.joysticktv import JoystickTVConnector
 from app.connectors.warudo import WarudoConnector
 from app.connectors.streamerbot import StreamerBotConnector
 from app.connectors.obs import OBSConnector
-from app.connectors.buttplug import ButtplugConnector
+from app.connectors.buttplug import ButtplugConnector, ButtplugProxyConnector, ButtplugReceiverConnector
 from app.connectors.pishock import PiShockConnector
 from app.connectors.vrchat import VRChatConnector
 
@@ -35,6 +35,8 @@ class Bot(ConnectorManager):
         # StreamerBotConnector(self)
         OBSConnector(self)
         ButtplugConnector(self)
+        # ButtplugProxyConnector(self)
+        # ButtplugReceiverConnector(self)
         PiShockConnector(self)
         VRChatConnector(self)
 
