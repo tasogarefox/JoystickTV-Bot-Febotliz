@@ -1,3 +1,4 @@
+from typing import ClassVar
 import asyncio
 
 from app import log
@@ -15,6 +16,8 @@ from app.connectors.vrchat import VRChatConnector
 # Bot
 
 class Bot(ConnectorManager):
+    INSTANCES: ClassVar[set["Bot"]] = set()
+
     _initialized: bool = False
 
     def __init__(self):
@@ -37,7 +40,12 @@ class Bot(ConnectorManager):
 
     async def run(self):
         await self.init()
+        self.INSTANCES.add(self)
         await super().run()
+
+    async def shutdown(self):
+        self.INSTANCES.discard(self)
+        return await super().shutdown()
 
 
 # ==============================================================================
