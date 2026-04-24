@@ -127,13 +127,15 @@ class VRChatConnector(BaseConnector):
     NAME: ClassVar[str] = CLIENT_NAME
 
     _client: SimpleUDPClient
-    _server: VRChatReceiver
+    _server: VRChatReceiver | None = None
 
     def __init__(self, manager: ConnectorManager):
         super().__init__(manager)
 
         self._client = self._create_client()
-        self._server = self._create_server()
+
+        if ENABLE_SERVER:
+            self._server = self._create_server()
 
     def _create_client(self) -> SimpleUDPClient:
         return SimpleUDPClient(*parse_hostport(CLIENT_HOST))
@@ -147,7 +149,7 @@ class VRChatConnector(BaseConnector):
 
     @asynccontextmanager
     async def connect(self):
-        if not ENABLE_SERVER:
+        if self._server is None:
             yield
             return
 
