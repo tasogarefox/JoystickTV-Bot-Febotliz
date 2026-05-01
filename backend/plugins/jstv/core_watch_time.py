@@ -17,12 +17,14 @@ class PointsCommand(JSTVCommand):
 
     @classmethod
     async def handle(cls, ctx) -> bool:
+        streams = ctx.viewer.total_streams_watched
         tmin, tsec = divmod(int(ctx.viewer.total_watch_time), 60)
         thour, tmin = divmod(tmin, 60)
         tday, thour = divmod(thour, 24)
 
         await ctx.reply((
-            f"has been watching {tday:,d}d {thour:d}h {tmin:d}m total"
+            f"has been watching {tday:,d}d {thour:d}h {tmin:d}m"
+            f" across {streams:,d} streams"
         ), mention=True)
 
         return True
