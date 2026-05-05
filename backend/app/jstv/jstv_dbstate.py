@@ -182,7 +182,6 @@ def update_watch_streak(channel: Channel, viewer: Viewer) -> None:
         return
 
     # Update viewer
-    viewer.total_streams_watched += 1
     viewer.cur_watch_streak = streak
     viewer.last_streak_stream_id = channel.cur_stream_id
 
