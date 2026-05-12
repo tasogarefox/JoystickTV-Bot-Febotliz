@@ -22,8 +22,8 @@ CLIENT_SECRET = os.getenv("JOYSTICKTV_CLIENT_SECRET")
 assert CLIENT_ID, "Missing environment variable: JOYSTICKTV_CLIENT_ID"
 assert CLIENT_SECRET, "Missing environment variable: JOYSTICKTV_CLIENT_SECRET"
 
-HOST="https://joystick.tv"
-WS_HOST="wss://joystick.tv/cable"
+HOST="https://api.joystick.tv"
+WS_HOST="wss://api.joystick.tv/cable"
 
 ACCESS_TOKEN = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode("ascii")).decode()
 GATEWAY_IDENTIFIER = '{"channel":"GatewayChannel"}'
