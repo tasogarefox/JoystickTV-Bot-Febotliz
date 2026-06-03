@@ -1380,6 +1380,8 @@ def iter_repeat_frames_until_adjusted_duration(
 
 class ExprBuilder:
     DURATION_SUFFIXES: ClassVar[dict[str, int]] = {
+        "sec": 1000,
+        "min": 60_000,
         "ms": 1,
         "s": 1000,
         "m": 60_000,
