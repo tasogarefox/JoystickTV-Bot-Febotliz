@@ -57,7 +57,7 @@ class OBSConnector(BaseConnector):
         await super().on_connected()
 
         # Start replay buffer
-        resp = await self.request(Request("StartReplayBuffer"))
+        resp = await self.request("StartReplayBuffer")
         self.logger.info("Replay buffer started: %s", resp)
 
     async def on_disconnected(self):
@@ -73,14 +73,19 @@ class OBSConnector(BaseConnector):
         await self._shutdown.wait()
 
     async def save_replay_buffer(self) -> bool:
-        resp = await self.request(Request("SaveReplayBuffer"))
+        resp = await self.request("SaveReplayBuffer")
         self.logger.info("Replay buffer saved: %s", resp)
 
-        # resp = await self.request(Request("GetLastReplayBufferReplay"))
+        # resp = await self.request("GetLastReplayBufferReplay")
         # self.logger.info("Last replay: %s", resp)
         # file = resp.res_data.get("savedReplayPath")
 
         return True
 
-    async def request(self, req: Request) -> dict:
+    async def request(self, req_type: str, req_data: dict | None = None) -> dict:
+        if req_data is not None:
+            req = Request(req_type, req_data)
+        else:
+            req = Request(req_type)
+
         return await self._client.request(req)
