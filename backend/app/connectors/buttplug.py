@@ -1210,6 +1210,9 @@ from app.connector import WebSocketConnector
 class ButtplugReceiverConnector(WebSocketConnector):
     NAME: ClassVar[str] = "ButtplugReceiver"
 
+    FORWARD_TO_BUTTBLUG: bool = True
+    FORWARD_TO_PISHOCK: bool = False
+
     MOD_INTENSITY: float = 0.5
     MIN_INTENSITY: int = 1
     MAX_INTENSITY: int = int(os.getenv("PISHOCK_MAX_INTENSITY", 10))
@@ -1297,21 +1300,23 @@ class ButtplugReceiverConnector(WebSocketConnector):
 
         tasks = []
 
-        buttplug = self.manager.get(ButtplugConnector)
-        if buttplug:
-            duration = 5
-            frame = VibeFrame.new_override(duration, intensity / 100)
-            tasks.append(buttplug.enqueue(frame))
+        if self.FORWARD_TO_BUTTBLUG:
+            buttplug = self.manager.get(ButtplugConnector)
+            if buttplug:
+                duration = 5
+                frame = VibeFrame.new_override(duration, intensity / 100)
+                tasks.append(buttplug.enqueue(frame))
 
-        pishock = self.manager.get(PiShockConnector)
-        if pishock:
-            shock_intensity = intensity * self.MOD_INTENSITY
-            shock_intensity = int(min(max(shock_intensity, self.MIN_INTENSITY), self.MAX_INTENSITY))
+        if self.FORWARD_TO_PISHOCK:
+            pishock = self.manager.get(PiShockConnector)
+            if pishock:
+                shock_intensity = intensity * self.MOD_INTENSITY
+                shock_intensity = int(min(max(shock_intensity, self.MIN_INTENSITY), self.MAX_INTENSITY))
 
-            frame = ShockFrame(ShockMode.Shock, 0.3, shock_intensity)
+                frame = ShockFrame(ShockMode.Shock, 0.3, shock_intensity)
 
-            self.logger.info("Converting vibe (intensity=%d) to shock: %s", intensity, frame)
-            tasks.append(pishock.send_shock(frame))
+                self.logger.info("Converting vibe (intensity=%d) to shock: %s", intensity, frame)
+                tasks.append(pishock.send_shock(frame))
 
         if tasks:
             await asyncio.gather(*tasks)
