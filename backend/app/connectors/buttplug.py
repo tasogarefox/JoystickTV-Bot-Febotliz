@@ -1223,6 +1223,11 @@ class ButtplugReceiverConnector(WebSocketConnector):
     device_code: ClassVar[str] = "FEBOTLIZ"
     device_address: ClassVar[str] = device_code
     device_identifier: ClassVar[str] = f"LVS-{device_code}"
+    """
+    Intiface device identifier.
+    Make sure to add a WebSocket device with this name and
+    protocol type "lovense" in Intiface.
+    """
 
     _intensity: int = 0
 
