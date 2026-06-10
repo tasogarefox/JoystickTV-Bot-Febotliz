@@ -41,7 +41,7 @@ REWARD_CHATTED_ONCE: int = 100
 REWARD_CHATTED_FIXED: int = 0
 """fixed points for each chat message"""
 
-REWARD_TIPPED_PER_TOKEN: float = 1.0
+REWARD_TIPPED_PER_TOKEN: float = 0.0
 """points per token"""
 REWARD_TIPPED_FIXED: int = 0
 """fixed points for each tips"""
@@ -62,6 +62,8 @@ def adjust_viewer_points(
     viewer: Viewer,
     amount: int,
     reason: str,
+    *,
+    limit: bool = True,
 ) -> int:
     """
     Adjust points for a viewer.
@@ -70,10 +72,11 @@ def adjust_viewer_points(
     if amount == 0:
         return 0
 
-    elif amount < 0:
+    amount_clipped = amount
+    if amount < 0:
         amount_clipped = max(amount, -viewer.points)
 
-    else:  # amount > 0
+    elif limit:  # if limit and amount > 0
         max_points = MAX_POINTS
 
         if viewer.is_subscriber:
@@ -165,7 +168,7 @@ def reward_viewer_watch_time(
     tmin, tsec = divmod(seconds, 60)
     points = adjust_viewer_points(viewer, points, (
         f"watched for {tmin:d}:{tsec:02d}"
-    ))
+    ), limit=True)
 
     return points
 
@@ -463,7 +466,7 @@ async def on_new_chat(
     viewer.total_chatted += 1
     viewer.last_chatted_at = utcnow()
 
-    points = adjust_viewer_points(viewer, points, reason)
+    points = adjust_viewer_points(viewer, points, reason, limit=True)
 
     # Fail-safe for offline viewers
     if not viewer.is_present:
@@ -525,7 +528,9 @@ async def on_tipped(
     viewer.total_tipped += amount
     viewer.last_tipped_at = now
 
-    points = adjust_viewer_points(viewer, points, f"tipped {amount} tokens")
+    points = adjust_viewer_points(viewer, points, (
+        f"tipped {amount} tokens"
+    ), limit=False)
 
     # Update channel
     channel.cur_tipped = channel.accumulate_per_stream(
@@ -561,6 +566,6 @@ async def on_raided(
     if fresh_stream:
         points = adjust_viewer_points(viewer, points, (
             f"raided with {viewer_count} viewers"
-        ))
+        ), limit=True)
 
     return points

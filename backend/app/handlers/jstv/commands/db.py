@@ -381,7 +381,7 @@ class BoundViewerCommand:
                 if total_cost:
                     jstv_dbstate.adjust_viewer_points(viewer, total_cost, (
                         f"refund for error in command {alias}"
-                    ))
+                    ), limit=False)
 
                 # Report error
                 logger.exception("Error handling command %r: %s", cmd.key, e)
@@ -397,7 +397,7 @@ class BoundViewerCommand:
                 if total_cost:
                     jstv_dbstate.adjust_viewer_points(viewer, total_cost, (
                         f"refund for failed command {alias}"
-                    ))
+                    ), limit=False)
                 return False
 
             # Update database

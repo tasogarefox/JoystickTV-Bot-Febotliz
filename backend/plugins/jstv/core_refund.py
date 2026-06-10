@@ -217,7 +217,7 @@ class RefundCommand(JSTVCommand):
         )
 
         if amount > 0:
-            jstv_dbstate.adjust_viewer_points(viewer, amount, msg)
+            jstv_dbstate.adjust_viewer_points(viewer, amount, msg, limit=False)
 
         await ctx.reply(msg)
         return True

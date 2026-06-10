@@ -337,11 +337,11 @@ class JoystickTVConnector(WebSocketConnector):
 
         async with AsyncSessionMaker.begin() as db:
             points = await jstv_dbstate.on_followed(db, channel_id, username, None)
-            if points > 0:
-                await self.send_chat(channel_id, (
-                    f"Thanks for following!"
-                    f" +{points} {POINTS_NAME}"
-                ), whisper=username)
+            # if points > 0:
+            #     await self.send_chat(channel_id, (
+            #         f"Thanks for following!"
+            #         f" +{points} {POINTS_NAME}"
+            #     ), whisper=username)
 
     async def on_subscribed(self, evmsg: evjstv.JSTVSubscribed):
         channel_id = evmsg.channelId
@@ -349,11 +349,11 @@ class JoystickTVConnector(WebSocketConnector):
 
         async with AsyncSessionMaker.begin() as db:
             points = await jstv_dbstate.on_subscribed(db, channel_id, username, None)
-            if points > 0:
-                await self.send_chat(channel_id, (
-                    f"Thanks for subscribing!"
-                    f" +{points} {POINTS_NAME}"
-                ), whisper=username)
+            # if points > 0:
+            #     await self.send_chat(channel_id, (
+            #         f"Thanks for subscribing!"
+            #         f" +{points} {POINTS_NAME}"
+            #     ), whisper=username)
 
     async def on_tipped(self, evmsg: evjstv.JSTVTipped):
         async with AsyncSessionMaker.begin() as db:
@@ -395,11 +395,11 @@ class JoystickTVConnector(WebSocketConnector):
 
         async with AsyncSessionMaker.begin() as db:
             points = await jstv_dbstate.on_raided(db, channel_id, username, None, number_of_viewers)
-            if points > 0:
-                await self.send_chat(channel_id, (
-                    f"Thanks for the drop-in!"
-                    f" +{points} {POINTS_NAME}"
-                ), whisper=username)
+            # if points > 0:
+            #     await self.send_chat(channel_id, (
+            #         f"Thanks for the drop-in!"
+            #         f" +{points} {POINTS_NAME}"
+            #     ), whisper=username)
 
     async def send_chat(
         self,

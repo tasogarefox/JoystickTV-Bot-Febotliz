@@ -211,11 +211,11 @@ class GivePointsCommand(JSTVCommand[None, Cache]):
 
             jstv_dbstate.adjust_viewer_points(ctx.viewer, -amount, (
                 f"command {cls.key}: {amount} from {ctx.actorname} -> {target_name}"
-            ))
+            ), limit=False)
 
         jstv_dbstate.adjust_viewer_points(target, amount, (
             f"command {cls.key}: {amount} from {ctx.actorname} -> {target_name}"
-        ))
+        ), limit=False)
 
         await random_amount_reply(ctx, REPLIES_AMOUNT, target_name, amount)
         return True
