@@ -14,6 +14,7 @@ router = APIRouter(prefix="/command", tags=["command"])
 # ==============================================================================
 # Endpoints
 
+@router.get("/")
 @router.post("/")
 async def run_command(
     channel_id: str,
