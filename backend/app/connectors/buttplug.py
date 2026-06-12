@@ -547,6 +547,10 @@ class ButtplugConnector(BaseConnector):
             await self.clear()
             return True
 
+        elif msg.action in ["skip", "next"]:
+            await self.skip()
+            return True
+
         elif msg.action in ["delay", "disable"]:
             if isinstance(msg.data, (int, float)):
                 await self.delay(msg.data)
@@ -586,7 +590,7 @@ class ButtplugConnector(BaseConnector):
         group = vibe if isinstance(vibe, VibeGroup) else VibeGroup((vibe,))
         await self._vibe_queue.put(group)
 
-    async def clear(self):
+    async def clear(self) -> None:
         try:
             while True:
                 self._vibe_queue.get_nowait()
@@ -596,6 +600,9 @@ class ButtplugConnector(BaseConnector):
         self._cur_vibe_group = None
 
         await self._vibe([x.name for x in self.client.devices.values()], 0)
+
+    async def skip(self) -> None:
+        self._cur_vibe_group = None
 
     async def delay(self, seconds: float) -> None:
         now = datetime.now()

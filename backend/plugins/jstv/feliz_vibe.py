@@ -210,6 +210,22 @@ class VibeClearCommand(JSTVCommand):
         await ctx.connector.talkto("Buttplug", "stop", None)
         return True
 
+class VibeSkipCommand(JSTVCommand):
+    key = "feliz.vibe.skip"
+    title = "Vibe Skip"
+    description = "Skip current buttplug vibe group"
+    tags = frozenset({HandlerTags.nsfw})
+
+    settings = JSTVCommandSettings(
+        aliases = ("vibeskip",),
+        min_access_level=AccessLevel.moderator,
+    )
+
+    @classmethod
+    async def handle(cls, ctx) -> bool:
+        await ctx.connector.talkto("Buttplug", "skip", None)
+        return True
+
 class VibeDelayCommand(JSTVCommand):
     key = "feliz.vibe.delay"
     title = "Vibe Delay"
