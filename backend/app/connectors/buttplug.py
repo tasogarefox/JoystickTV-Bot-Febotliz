@@ -1315,7 +1315,7 @@ class ButtplugReceiverConnector(WebSocketConnector):
         if self.FORWARD_TO_BUTTBLUG:
             buttplug = self.manager.get(ButtplugConnector)
             if buttplug:
-                duration = 5
+                duration = 10
                 frame = VibeFrame.new_override(duration, intensity / 100)
                 tasks.append(buttplug.enqueue(frame))
 
