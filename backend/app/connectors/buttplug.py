@@ -756,6 +756,10 @@ class ButtplugConnector(BaseConnector):
             if vibegraph.config.paused:
                 delay = VIBE_CHECK_INTERVAL
 
+                if vibe is not None and active:
+                    active = False
+                    tasks.append(self._vibe(devices, 0))
+
             elif self._delayed_until > now:
                 total_delay = (self._delayed_until - now).total_seconds()
                 delay = min(total_delay, VIBE_CHECK_INTERVAL)
