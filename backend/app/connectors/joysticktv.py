@@ -48,6 +48,13 @@ VIP_USERS = tuple(x.casefold() for x in getenv_list("JOYSTICKTV_VIP_USERS"))
 
 
 # ==============================================================================
+# Helpers
+
+def short_channel_id(channel_id: str) -> str:
+    return channel_id[:7]
+
+
+# ==============================================================================
 # JoystickTV Connector
 
 class LiveChannel:
@@ -104,6 +111,20 @@ class JoystickTVConnector(WebSocketConnector):
                     "identifier": GATEWAY_IDENTIFIER,
                     "data": json.dumps(data),
                 })
+
+                if whisper:
+                    self.logger.info(
+                        "Sent whisper: @%s %s: %s",
+                        short_channel_id(channelId),
+                        whisper,
+                        line,
+                    )
+                else:
+                    self.logger.info(
+                        "Sent message: @%s: %s",
+                        short_channel_id(channelId),
+                        line,
+                    )
 
             return True
 
