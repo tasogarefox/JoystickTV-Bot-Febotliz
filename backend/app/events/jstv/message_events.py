@@ -428,8 +428,7 @@ class JSTVUserLeftStream(JSTVBaseUserPresence):
 
 class JSTVChatEmote(JSTVLoggedModel):
     code: str
-    signedUrl: str
-    signedThumbnailUrl: str
+    url: str
 
 class JSTVBaseChatMessage(JSTVBaseMessageWithMessageId):
     visibility: str
