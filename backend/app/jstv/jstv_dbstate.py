@@ -51,9 +51,6 @@ REWARD_RAIDED_PER_VIEWER: float = 0.0
 REWARD_RAIDED_FIXED: int = 50
 """points for raid/drop-in"""
 
-REWARD_STREAK_FIXED: int = 100
-"""fixed points for each consecutive stream"""
-
 
 # ==============================================================================
 # Interface
@@ -153,7 +150,6 @@ def reward_viewer_watch_time(
     points = max(0, intervals * points_per_interval)
 
     # Update viewer
-    update_watch_streak(channel, viewer)
 
     if channel.is_fresh_stream(viewer.watch_time_rewarded_at):
         viewer.total_streams_watched += 1
@@ -312,6 +308,9 @@ async def on_viewer_interaction(
     user: User | str,
     viewer: Viewer | None,
 ) -> None:
+    if not isinstance(channel, Channel):
+        channel = await jstv_db.get_or_create_channel(db, channel)
+
     if not isinstance(viewer, Viewer):
         viewer = await jstv_db.get_or_create_viewer(db, channel, user)
 
@@ -321,6 +320,8 @@ async def on_viewer_interaction(
         viewer.first_seen_at = now
 
     viewer.last_seen_at = now
+
+    update_watch_streak(channel, viewer)
 
 async def on_stream_started(db: AsyncSession, channel: Channel | str) -> None:
     """
