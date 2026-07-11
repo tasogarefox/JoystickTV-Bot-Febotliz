@@ -22,6 +22,8 @@ MAX_DURATION = float(os.getenv("BUTTPLUG_MAX_DURATION", 120.0))
 
 COST_PER_SECOND = float(os.getenv("BUTTPLUG_COST_PER_SECOND", 10.0))
 
+DEFAULT_INTENSITY = 50
+
 
 # ==============================================================================
 # Vibe Patterns
@@ -134,7 +136,10 @@ class VibeCommand(JSTVCommand[None, VibeCommandCache]):
                 raise ValueError
 
             frames = tuple(signal_builder.eval(
-                signal_builder.parse(ctx.argument),
+                (
+                    signal_builder.parse(ctx.argument)
+                    or signals.IntensityExpr(DEFAULT_INTENSITY)
+                ),
                 **cfg_kwargs,
             ))
 
