@@ -880,7 +880,7 @@ class IntensityExpr(SignalExpr):
 
     intensities: list[tuple[int, int] | int | None]
 
-    def __init__(self, intensities: Iterable[tuple[int, int] | int | None]):
+    def __init__(self, *intensities: tuple[int, int] | int | None):
         self.intensities = list(intensities)
 
     def __str__(self) -> str:
@@ -894,7 +894,7 @@ class IntensityExpr(SignalExpr):
             elif item is None:
                 parts.append("")
 
-            else:
+            else:  # int
                 parts.append(f"{item}% ")
 
         s = "..".join(parts)
@@ -929,7 +929,7 @@ class IntensityExpr(SignalExpr):
             elif item is None:
                 # Use previous intensity
                 intensity = prev_intensity
-            else:
+            else:  # int
                 # Use fixed intensity
                 intensity = item
 
@@ -1584,7 +1584,7 @@ class ExprBuilder:
                 if not intensities:
                     raise SignalBuildError(f"Invalid intensity-percent: {token}")
 
-                expr_stack.append(IntensityExpr(intensities))
+                expr_stack.append(IntensityExpr(*intensities))
                 continue
 
             suffix = self._match_suffix(token, {"x"})
