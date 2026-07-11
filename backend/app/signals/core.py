@@ -828,6 +828,9 @@ class SequenceExpr(SignalExpr):
     def __str__(self) -> str:
         return " ".join(str(x) for x in self.items)
 
+    def __bool__(self) -> bool:
+        return bool(self.items)
+
     def _eval(self, ctx: SignalContext) -> Generator[SignalFrame, None, None]:
         subctx = ctx.make_child()
         for item in self.items:
@@ -868,6 +871,9 @@ class ChoiceExpr(SignalExpr):
     def __str__(self) -> str:
         s = " | ".join(str(x) for x in self.options)
         return f"({s})"
+
+    def __bool__(self) -> bool:
+        return bool(self.options)
 
     def _eval(self, ctx: SignalContext) -> Generator[SignalFrame, None, None]:
         choice = ctx.rng.choice(self.options)
