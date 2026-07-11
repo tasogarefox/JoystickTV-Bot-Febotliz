@@ -1233,7 +1233,7 @@ class ButtplugReceiverConnector(WebSocketConnector):
     device_websocket: ClassVar[str] = "ws://127.0.0.1:54817"
     device_code: ClassVar[str] = "FEBOTLIZ"
     device_address: ClassVar[str] = device_code
-    device_identifier: ClassVar[str] = f"LVS-{device_code}"
+    device_identifier: ClassVar[str] = device_code
     """
     Intiface device identifier.
     Make sure to add a WebSocket device with this name and
