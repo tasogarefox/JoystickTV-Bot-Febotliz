@@ -822,6 +822,8 @@ class ButtplugConnector(BaseConnector):
         if not device_names:
             return
 
+        intensity = max(0, min(1, intensity))
+
         for device in self.client.devices.values():
             if device.name not in device_names:
                 continue
