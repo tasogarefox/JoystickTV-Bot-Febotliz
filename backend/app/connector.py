@@ -7,6 +7,7 @@ import logging
 import json
 import websockets
 import socket
+import time
 
 from .settings import MAX_INIT_ATTEMPTS, MAX_RECONNECT_DELAY
 from .utils.asyncio import async_select
@@ -233,17 +234,27 @@ class BaseConnector(abc.ABC):
     async def connect_loop(self):
         """Connect to the server, reconnecting if necessary."""
         self._shutdown.clear()
-        reconnect_attempt = 0
-        initializing = True
+        time_connected: float | None = None
+        reconnect_attempt: int = 0
+        initializing: bool = True
 
         while not self._shutdown.is_set():
+            # Reset reconnect attempt if we've been connected for at least 60 seconds
+            time_delta = time.time() - time_connected if time_connected else 0
+            if time_delta >= 60:
+                reconnect_attempt = 0
+                initializing = False
+
+            # Increment reconnect attempt
             reconnect_attempt += 1
 
+            # Shut down if we've exceeded the maximum number of initial connection attempts
             if initializing and reconnect_attempt > MAX_INIT_ATTEMPTS:
                 self.logger.info("Unable to connect, shutting down connector...")
                 self._shutdown.set()
                 break
 
+            # Delay reconnect if it's not the first attempt
             if reconnect_attempt > 1:
                 delay = min(
                     MAX_RECONNECT_DELAY,
@@ -252,16 +263,17 @@ class BaseConnector(abc.ABC):
                 self.logger.info("Reconnecting in %d seconds...", delay)
                 await asyncio.sleep(delay)
 
+            #
             if initializing:
                 self.logger.info(f"Connecting [attempt {reconnect_attempt} of {MAX_INIT_ATTEMPTS}]...")
             else:
                 self.logger.info("Reconnecting...")
 
+            # Try to connect
             try:
                 async with self.connect():
                     self._connected = True
-                    reconnect_attempt = 0
-                    initializing = False
+                    time_connected = time.time()
 
                     await self.on_connected()
                     await self.main_loop()
