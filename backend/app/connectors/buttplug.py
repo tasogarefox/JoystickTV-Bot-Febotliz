@@ -854,6 +854,7 @@ class ButtplugConnector(BaseConnector):
 import itertools
 import json
 import websockets
+import logging
 
 from app.connector import WebSocketConnector
 
@@ -862,6 +863,8 @@ IntifaceMessage = list[dict[str, Any]]
 INTIFACE_URL = "ws://127.0.0.1:12346"
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 12345  # clients connect here instead
+BUTTPLUG_PROXY_LOG_LEVEL = logging.INFO
+BUTTPLUG_PROXY_DOWNGRADE_V3 = True
 
 class ButtplugProxyClients:
     _clients: dict[int | None, "ClientInfo"]
@@ -980,18 +983,26 @@ class ButtplugProxyConnector(WebSocketConnector):
 
     def __init__(self, manager: ConnectorManager):
         super().__init__(manager)
+        self.logger.level = BUTTPLUG_PROXY_LOG_LEVEL
         self.clients = ButtplugProxyClients()
 
     def _get_url(self) -> str:
         return INTIFACE_URL
 
     async def _request_server_info(self) -> None:
+        server_info = {
+            "ClientName": self.logger.name,
+            "Id": self.clients.register_internal_message(),
+        }
+
+        if BUTTPLUG_PROXY_DOWNGRADE_V3:
+            server_info["MessageVersion"] = 3
+        else:
+            server_info["ProtocolVersionMajor"] = 4
+            server_info["ProtocolVersionMinor"] = 0
+
         data = [{
-            "RequestServerInfo": {
-                "ClientName": self.logger.name,
-                "MessageVersion": 3,
-                "Id": self.clients.register_internal_message(),
-            },
+            "RequestServerInfo": server_info,
         }]
 
         self.logger.debug("[P -> S]: %s", data)
@@ -1041,15 +1052,23 @@ class ButtplugProxyConnector(WebSocketConnector):
                         "Exception processing client message: %s"
                     ), msg)
 
-        except websockets.ConnectionClosedError:
-            pass
+        except websockets.ConnectionClosedError as e:
+            self.logger.info(
+                "Client closed; code=%s reason=%r",
+                e.code,
+                e.reason,
+            )
 
         except Exception:
             self.logger.exception("Exception processing client")
 
         finally:
             self.clients.cleanup_client(ws_client)
-            self.logger.info("Client disconnected")
+            self.logger.info(
+                "Client disconnected; close_code=%s close_reason=%r",
+                ws_client.close_code,
+                ws_client.close_reason,
+            )
 
     async def on_message(self, data: Any) -> None:
         await self.on_server_message(data)
@@ -1094,13 +1113,20 @@ class ButtplugProxyConnector(WebSocketConnector):
                     continue
 
                 if reqtype == "RequestServerInfo":
-                    immediate_reply.append({
-                        "ServerInfo": {
+                    server_info = {
                             "Id": client_req_id,
-                            "MessageVersion": req.get("MessageVersion", 3),
                             "MaxPingTime": 0,
                             "ServerName": self.logger.name,
-                        },
+                        }
+
+                    if BUTTPLUG_PROXY_DOWNGRADE_V3:
+                        server_info["MessageVersion"] = req.get("MessageVersion", 3)
+                    else:
+                        server_info["ProtocolVersionMajor"] = req.get("ProtocolVersionMajor", 4),
+                        server_info["ProtocolVersionMinor"] = req.get("ProtocolVersionMinor", 0),
+
+                    immediate_reply.append({
+                        "ServerInfo": server_info,
                     })
 
                     self.logger.info("Received RequestServerInfo; ClientName: %s", req.get("ClientName"))
@@ -1200,14 +1226,13 @@ class ButtplugProxyConnector(WebSocketConnector):
         for client, reply in replies.items():
             self.logger.debug("[P -> C]: %s", reply)
 
-            for client, reply in replies.items():
-                try:
-                    msg = json.dumps(reply)
-                    await client.send(msg)
-                except websockets.ConnectionClosedError:
-                    self.logger.debug("Client closed, skipping reply")
-                except Exception as e:
-                    self.logger.exception("Failed to send message to client: %s", e)
+            try:
+                msg = json.dumps(reply)
+                await client.send(msg)
+            except websockets.ConnectionClosedError:
+                self.logger.debug("Client closed, skipping reply")
+            except Exception as e:
+                self.logger.exception("Failed to send message to client: %s", e)
 
         if broadcast:
             self.logger.debug("[P -> C]: %s", broadcast)
