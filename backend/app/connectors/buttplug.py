@@ -11,8 +11,8 @@ import random
 from datetime import datetime, timedelta
 
 from buttplug import (
-    Client, WebsocketConnector, ProtocolSpec,
-    ServerNotFoundError, DisconnectedError, ConnectorError, DeviceServerError,
+    ButtplugClient, ButtplugDevice, DeviceOutputCommand, OutputType,
+    ButtplugConnectorError, ButtplugDeviceError,
 )
 
 from app.settings import getenv_list
@@ -503,7 +503,7 @@ class VibeGroup:
 class ButtplugConnector(BaseConnector):
     NAME: ClassVar[str] = NAME
 
-    client: Client
+    client: ButtplugClient
 
     _device_cache: set[str]
 
@@ -520,18 +520,14 @@ class ButtplugConnector(BaseConnector):
         self._vibe_queue = asyncio.Queue()
         self._delayed_until = datetime.now()
 
-    def _create_client(self) -> Client:
+    def _create_client(self) -> ButtplugClient:
         logger = self.logger.getChild("Client")
-        return Client(logger.name, ProtocolSpec.v3)
-
-    def _create_connection(self) -> WebsocketConnector:
-        return WebsocketConnector(URL, logger=self.client.logger)
+        return ButtplugClient(logger.name)
 
     @asynccontextmanager
     async def connect(self):
         try:
-            self.connector = self._create_connection()
-            await self.client.connect(self.connector)
+            await self.client.connect(URL)
             yield
         finally:
             asyncio.create_task(self.__try_disconnect())
@@ -540,7 +536,7 @@ class ButtplugConnector(BaseConnector):
         if self.client.connected:
             try:
                 await self.client.disconnect()
-            except ConnectorError as e:
+            except ButtplugConnectorError as e:
                 self.logger.warning("Error while disconnecting: %s", e)
 
     async def talk_receive(self, msg: ConnectorMessage) -> bool:
@@ -570,24 +566,24 @@ class ButtplugConnector(BaseConnector):
         await super().on_connected()
 
     async def on_error(self, error: Exception):
-        if isinstance(error, ServerNotFoundError):
-            self.logger.warning("Server not found in %s: %s", type(self).__name__, error)
+        if isinstance(error, ButtplugConnectorError):
+            self.logger.warning("Buttplug error in %s: %s", type(self).__name__, error)
+        elif isinstance(error, TimeoutError):
+            self.logger.warning("Timeout in %s: %s", type(self).__name__, error)
         else:
             return await super().on_error(error)
 
-    def all_devices(self) -> set[str]:
-        return set(
-            x.name
-            for x in self.client.devices.values()
-            if x.name not in DEVICE_BLACKLIST
-        )
+    def iter_devices(self) -> Iterator[ButtplugDevice]:
+        for x in self.client.devices.values():
+            if x.name not in DEVICE_BLACKLIST:
+                yield x
+
+    def all_device_names(self) -> set[str]:
+        return set(x.name for x in self.iter_devices())
 
     @property
     def has_devices(self) -> bool:
-        return any(
-            x.name not in DEVICE_BLACKLIST
-            for x in self.client.devices.values()
-        ) or ADD_FAKE_DEVICE
+        return any(self.iter_devices()) or ADD_FAKE_DEVICE
 
     async def enqueue(self, vibe: VibeGroup | VibeFrame) -> None:
         group = vibe if isinstance(vibe, VibeGroup) else VibeGroup((vibe,))
@@ -603,7 +599,7 @@ class ButtplugConnector(BaseConnector):
         self._vibe_channel_intensities.clear()
         self._cur_vibe_group = None
 
-        await self.vibe([x.name for x in self.client.devices.values()], 0)
+        await self.vibe(self.all_device_names(), 0)
 
     async def skip(self) -> None:
         self._cur_vibe_group = None
@@ -683,7 +679,7 @@ class ButtplugConnector(BaseConnector):
                 if group is not self._cur_vibe_group:
                     break
 
-                all_devices = self.all_devices()
+                all_devices = self.all_device_names()
                 new_devices = vibe.resolve_devices(all_devices)
                 old_devices = devices - new_devices
                 devices = new_devices
@@ -810,7 +806,7 @@ class ButtplugConnector(BaseConnector):
 
     async def _update_device_cache(self) -> set[str]:
         from app.routes.ws import vibegraph
-        devices = self.all_devices()
+        devices = self.all_device_names()
 
         if ADD_FAKE_DEVICE:
             devices.add("Fake Device")
@@ -837,15 +833,22 @@ class ButtplugConnector(BaseConnector):
         intensity = max(self._vibe_channel_intensities.values())
         intensity = max(0, min(1, intensity))
 
-        for device in self.client.devices.values():
+        for device in self.iter_devices():
             if device.name not in device_names:
                 continue
 
-            for actuator in device.actuators:
-                try:
-                    await actuator.command(intensity)
-                except (DisconnectedError, DeviceServerError):
-                    pass
+            if not device.has_output(OutputType.VIBRATE):
+                continue
+
+            try:
+                await device.run_output(
+                    DeviceOutputCommand(
+                        OutputType.VIBRATE,
+                        float(intensity),
+                    )
+                )
+            except ButtplugDeviceError:
+                pass
 
 
 # ==============================================================================
@@ -864,7 +867,7 @@ INTIFACE_URL = "ws://127.0.0.1:12346"
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 12345  # clients connect here instead
 BUTTPLUG_PROXY_LOG_LEVEL = logging.INFO
-BUTTPLUG_PROXY_DOWNGRADE_V3 = True
+BUTTPLUG_PROXY_DOWNGRADE_V3 = False
 
 class ButtplugProxyClients:
     _clients: dict[int | None, "ClientInfo"]
@@ -1360,7 +1363,7 @@ class ButtplugReceiverConnector(WebSocketConnector):
         if self.FORWARD_TO_BUTTBLUG_DIRECTLY:
             buttplug = self.manager.get(ButtplugConnector)
             if buttplug:
-                tasks.append(buttplug.vibe(buttplug.all_devices(), intensity / 100, self.NAME))
+                tasks.append(buttplug.vibe(buttplug.all_device_names(), intensity / 100, self.NAME))
 
         if self.FORWARD_TO_BUTTBLUG_ENQUEUE:
             buttplug = self.manager.get(ButtplugConnector)

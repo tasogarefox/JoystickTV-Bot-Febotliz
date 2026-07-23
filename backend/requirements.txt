@@ -9,5 +9,5 @@ sqlalchemy
 aiosqlite
 cryptography
 obs-ws-client
-buttplug-py
+buttplug
 python-osc
