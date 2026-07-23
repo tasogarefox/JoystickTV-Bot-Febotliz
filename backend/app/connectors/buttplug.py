@@ -1122,8 +1122,8 @@ class ButtplugProxyConnector(WebSocketConnector):
                     if BUTTPLUG_PROXY_DOWNGRADE_V3:
                         server_info["MessageVersion"] = req.get("MessageVersion", 3)
                     else:
-                        server_info["ProtocolVersionMajor"] = req.get("ProtocolVersionMajor", 4),
-                        server_info["ProtocolVersionMinor"] = req.get("ProtocolVersionMinor", 0),
+                        server_info["ProtocolVersionMajor"] = req.get("ProtocolVersionMajor", 4)
+                        server_info["ProtocolVersionMinor"] = req.get("ProtocolVersionMinor", 0)
 
                     immediate_reply.append({
                         "ServerInfo": server_info,
