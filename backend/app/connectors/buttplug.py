@@ -26,6 +26,7 @@ from app.utils.asyncio import async_select
 ADD_FAKE_DEVICE = False  # Add fake device for testing
 CHAT_VIBE_INFO = False
 VIBE_CHECK_INTERVAL = 0.1
+DEFAULT_VIBE_CHANNEL = "DEFAULT"
 
 WS_HOST = os.getenv("BUTTPLUG_WS_HOST")
 assert WS_HOST, "Missing environment variable: BUTTPLUG_WS_HOST"
@@ -506,6 +507,7 @@ class ButtplugConnector(BaseConnector):
 
     _device_cache: set[str]
 
+    _vibe_channel_intensities: dict[str, float]
     _vibe_queue: asyncio.Queue[VibeGroup]
     _cur_vibe_group: VibeGroup | None = None
     _delayed_until: datetime
@@ -514,6 +516,7 @@ class ButtplugConnector(BaseConnector):
         super().__init__(manager)
         self.client = self._create_client()
         self._device_cache = set()
+        self._vibe_channel_intensities = {}
         self._vibe_queue = asyncio.Queue()
         self._delayed_until = datetime.now()
 
@@ -572,7 +575,7 @@ class ButtplugConnector(BaseConnector):
         else:
             return await super().on_error(error)
 
-    def _get_devices(self) -> set[str]:
+    def all_devices(self) -> set[str]:
         return set(
             x.name
             for x in self.client.devices.values()
@@ -597,9 +600,10 @@ class ButtplugConnector(BaseConnector):
         except asyncio.QueueEmpty:
             pass
 
+        self._vibe_channel_intensities.clear()
         self._cur_vibe_group = None
 
-        await self._vibe([x.name for x in self.client.devices.values()], 0)
+        await self.vibe([x.name for x in self.client.devices.values()], 0)
 
     async def skip(self) -> None:
         self._cur_vibe_group = None
@@ -679,13 +683,13 @@ class ButtplugConnector(BaseConnector):
                 if group is not self._cur_vibe_group:
                     break
 
-                all_devices = self._get_devices()
+                all_devices = self.all_devices()
                 new_devices = vibe.resolve_devices(all_devices)
                 old_devices = devices - new_devices
                 devices = new_devices
 
                 if old_devices:
-                    await self._vibe(old_devices, 0)
+                    await self.vibe(old_devices, 0)
 
                 self.logger.debug("VibeFrame: %r", vibe)
 
@@ -708,7 +712,7 @@ class ButtplugConnector(BaseConnector):
             self._vibe_queue.task_done()
 
             if shutdown:
-                await self._vibe(devices, 0)
+                await self.vibe(devices, 0)
                 break
 
             if not self._vibe_queue.empty():
@@ -719,7 +723,7 @@ class ButtplugConnector(BaseConnector):
             ]
 
             if devices:
-                tasks.append(self._vibe(devices, 0))
+                tasks.append(self.vibe(devices, 0))
 
             if CHAT_VIBE_INFO:
                 msg = "Vibe: queue is empty"
@@ -758,7 +762,7 @@ class ButtplugConnector(BaseConnector):
 
                 if vibe is not None and active:
                     active = False
-                    tasks.append(self._vibe(devices, 0))
+                    tasks.append(self.vibe(devices, 0))
 
             elif self._delayed_until > now:
                 total_delay = (self._delayed_until - now).total_seconds()
@@ -766,7 +770,7 @@ class ButtplugConnector(BaseConnector):
 
                 if vibe is not None and active:
                     active = False
-                    tasks.append(self._vibe(devices, 0))
+                    tasks.append(self.vibe(devices, 0))
 
             elif vibe_delay > 0:
                 delay = min(vibe_delay, VIBE_CHECK_INTERVAL)
@@ -777,7 +781,7 @@ class ButtplugConnector(BaseConnector):
                     if not active or new_mult != mult:
                         active = True
                         mult = new_mult
-                        tasks.append(self._vibe(devices, vibe.intensity * mult))
+                        tasks.append(self.vibe(devices, vibe.intensity * mult))
 
             if delay <= 0:
                 break
@@ -806,7 +810,7 @@ class ButtplugConnector(BaseConnector):
 
     async def _update_device_cache(self) -> set[str]:
         from app.routes.ws import vibegraph
-        devices = self._get_devices()
+        devices = self.all_devices()
 
         if ADD_FAKE_DEVICE:
             devices.add("Fake Device")
@@ -818,10 +822,19 @@ class ButtplugConnector(BaseConnector):
 
         return devices
 
-    async def _vibe(self, device_names: Collection[str], intensity: float):
+    async def vibe(
+        self,
+        device_names: Collection[str],
+        intensity: float,
+        channel: str | None = None,
+    ):
         if not device_names:
             return
 
+        channel = channel or DEFAULT_VIBE_CHANNEL
+        self._vibe_channel_intensities[channel] = intensity
+
+        intensity = max(self._vibe_channel_intensities.values())
         intensity = max(0, min(1, intensity))
 
         for device in self.client.devices.values():
@@ -1223,7 +1236,8 @@ from app.connector import WebSocketConnector
 class ButtplugReceiverConnector(WebSocketConnector):
     NAME: ClassVar[str] = "ButtplugReceiver"
 
-    FORWARD_TO_BUTTBLUG: bool = True
+    FORWARD_TO_BUTTBLUG_DIRECTLY: bool = True
+    FORWARD_TO_BUTTBLUG_ENQUEUE: bool = False
     FORWARD_TO_PISHOCK: bool = False
 
     MOD_INTENSITY: float = 0.5
@@ -1318,7 +1332,12 @@ class ButtplugReceiverConnector(WebSocketConnector):
 
         tasks = []
 
-        if self.FORWARD_TO_BUTTBLUG:
+        if self.FORWARD_TO_BUTTBLUG_DIRECTLY:
+            buttplug = self.manager.get(ButtplugConnector)
+            if buttplug:
+                tasks.append(buttplug.vibe(buttplug.all_devices(), intensity / 100, self.NAME))
+
+        if self.FORWARD_TO_BUTTBLUG_ENQUEUE:
             buttplug = self.manager.get(ButtplugConnector)
             if buttplug:
                 duration = 10
