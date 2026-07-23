@@ -22,13 +22,14 @@ CLIENT_SECRET = os.getenv("JOYSTICKTV_CLIENT_SECRET")
 assert CLIENT_ID, "Missing environment variable: JOYSTICKTV_CLIENT_ID"
 assert CLIENT_SECRET, "Missing environment variable: JOYSTICKTV_CLIENT_SECRET"
 
-HOST="https://api.joystick.tv"
+HOST="https://joystick.tv"
+API_HOST="https://api.joystick.tv"
 WS_HOST="wss://api.joystick.tv/cable"
 
 ACCESS_TOKEN = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode("ascii")).decode()
 GATEWAY_IDENTIFIER = '{"channel":"GatewayChannel"}'
 
-TOKEN_URL = f"{HOST}/api/oauth/token"
+TOKEN_URL = f"{API_HOST}/api/oauth/token"
 
 WEB_TIMEOUT = 10
 
@@ -114,7 +115,7 @@ async def fetch_stream_settings(access_token: str) -> StreamSettings:
         "Content-Type": "application/json",
     }
 
-    url = f"{HOST}/api/users/stream-settings"
+    url = f"{API_HOST}/api/users/stream-settings"
 
     try:
         async with semaphore, httpx.AsyncClient(timeout=WEB_TIMEOUT) as client:
@@ -142,7 +143,7 @@ async def send_test_event(event: str, data: str) -> None:
         "Accept": "application/json",
     }
 
-    url = f"{HOST}/echo"
+    url = f"{API_HOST}/echo"
 
     try:
         async with semaphore, httpx.AsyncClient(timeout=WEB_TIMEOUT) as client:

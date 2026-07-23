@@ -48,4 +48,4 @@ async def callback(
     except JSTVAuthError as e:
         # Something went wrong with HTTP request
         logger.error("HTTP error in callback: %s", e)
-        return HTMLResponse(f"Error fetching data from {jstv_web.HOST}", status_code=status.HTTP_502_BAD_GATEWAY)
+        return HTMLResponse(f"Error fetching data from {jstv_web.API_HOST}", status_code=status.HTTP_502_BAD_GATEWAY)
