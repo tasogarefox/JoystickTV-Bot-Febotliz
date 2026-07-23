@@ -867,7 +867,6 @@ INTIFACE_URL = "ws://127.0.0.1:12346"
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 12345  # clients connect here instead
 BUTTPLUG_PROXY_LOG_LEVEL = logging.INFO
-BUTTPLUG_PROXY_DOWNGRADE_V3 = False
 
 class ButtplugProxyClients:
     _clients: dict[int | None, "ClientInfo"]
@@ -1002,11 +1001,8 @@ class ButtplugProxyConnector(WebSocketConnector):
             "Id": self.clients.register_internal_message(),
         }
 
-        if BUTTPLUG_PROXY_DOWNGRADE_V3:
-            server_info["MessageVersion"] = 3
-        else:
-            server_info["ProtocolVersionMajor"] = 4
-            server_info["ProtocolVersionMinor"] = 0
+        server_info["ProtocolVersionMajor"] = 4
+        server_info["ProtocolVersionMinor"] = 0
 
         data = [{
             "RequestServerInfo": server_info,
@@ -1126,11 +1122,8 @@ class ButtplugProxyConnector(WebSocketConnector):
                             "ServerName": self.logger.name,
                         }
 
-                    if BUTTPLUG_PROXY_DOWNGRADE_V3:
-                        server_info["MessageVersion"] = req.get("MessageVersion", 3)
-                    else:
-                        server_info["ProtocolVersionMajor"] = req.get("ProtocolVersionMajor", 4)
-                        server_info["ProtocolVersionMinor"] = req.get("ProtocolVersionMinor", 0)
+                    server_info["ProtocolVersionMajor"] = req.get("ProtocolVersionMajor", 4)
+                    server_info["ProtocolVersionMinor"] = req.get("ProtocolVersionMinor", 0)
 
                     immediate_reply.append({
                         "ServerInfo": server_info,
