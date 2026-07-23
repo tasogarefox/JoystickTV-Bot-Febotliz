@@ -247,7 +247,7 @@ class BaseConnector(abc.ABC):
             if reconnect_attempt > 1:
                 delay = min(
                     MAX_RECONNECT_DELAY,
-                    2 ** (reconnect_attempt - 1),
+                    2 ** (reconnect_attempt),
                 )
                 self.logger.info("Reconnecting in %d seconds...", delay)
                 await asyncio.sleep(delay)
