@@ -898,15 +898,16 @@ class ButtplugProxyClients:
     def iter_clients(self) -> Iterator["ClientInfo"]:
         return iter(self._clients.values())
 
-    def register_client(self, client: websockets.ServerConnection) -> int:
+    def register_client(self, client: websockets.ServerConnection) -> "ClientInfo":
         client_id = self.get_id(client)
 
-        self._clients[client_id] = self.ClientInfo(
+        client_info = self._clients[client_id] = self.ClientInfo(
+            id=client_id,
             client=client,
             internal_msg_ids=set(),
         )
 
-        return client_id
+        return client_info
 
     def cleanup_client(self, client: websockets.ServerConnection) -> None:
         client_id = self.get_id(client)
@@ -971,9 +972,12 @@ class ButtplugProxyClients:
     def pop_internal_message(self, internal_id: int) -> "MessageInfo | None":
         return self._internal_messages.pop(internal_id, None)
 
-    class ClientInfo(NamedTuple):
+    @dataclass
+    class ClientInfo:
+        id: int
         client: websockets.ServerConnection  # client itself
         internal_msg_ids: set[int]  # pending messages
+        name: str | None = None  # client name
 
     class MessageInfo(NamedTuple):
         client_id: int | None  # id(client) for forwarded messages or None for own messages
@@ -1042,13 +1046,13 @@ class ButtplugProxyConnector(WebSocketConnector):
     async def handle_client(self, ws_client: websockets.ServerConnection) -> None:
         self.logger.info("Client connected")
 
-        self.clients.register_client(ws_client)
+        client_info = self.clients.register_client(ws_client)
 
         try:
             async for msg in ws_client:
                 try:
                     data = self._parse_message(msg)
-                    await self.on_client_message(ws_client, data)
+                    await self.on_client_message(client_info, data)
 
                 except Exception:
                     self.logger.exception((
@@ -1078,7 +1082,7 @@ class ButtplugProxyConnector(WebSocketConnector):
 
     async def on_client_message(
         self,
-        client: websockets.ServerConnection,
+        client_info: ButtplugProxyClients.ClientInfo,
         data: Any,
     ) -> None:
         if not isinstance(data, list):
@@ -1132,10 +1136,12 @@ class ButtplugProxyConnector(WebSocketConnector):
                         "ServerInfo": server_info,
                     })
 
-                    self.logger.info("Received RequestServerInfo; ClientName: %s", req.get("ClientName"))
+                    client_info.name = req.get("ClientName")
+
+                    self.logger.info("Received RequestServerInfo; ClientName: %s", client_info.name)
 
                 else:
-                    internal_req_id = self.clients.register_message(client, client_req_id)
+                    internal_req_id = self.clients.register_message(client_info.client, client_req_id)
                     req["Id"] = internal_req_id
                     forward_request.append({
                         reqtype: req,
@@ -1148,7 +1154,7 @@ class ButtplugProxyConnector(WebSocketConnector):
         if immediate_reply:
             self.logger.debug("[P -> C]: %s", immediate_reply)
             msg = json.dumps(immediate_reply)
-            await client.send(msg)
+            await client_info.client.send(msg)
 
     async def on_server_message(self, data: Any) -> None:
         if not isinstance(data, list):
