@@ -64,6 +64,19 @@ async def invoke_events(
 
             logger.debug("Invoking event handler %r", handler.key)
 
+            # Prepare handler
+            try:
+                success = await handler.prepare(ctx)
+
+            except Exception as e:
+                # Report error
+                logger.exception("Error preparing command %r: %s", handler.key, e)
+                return False
+
+            if not success:
+                return False
+
+            # Invoke event
             try:
                 retval = await handler.handle(ctx)
 
