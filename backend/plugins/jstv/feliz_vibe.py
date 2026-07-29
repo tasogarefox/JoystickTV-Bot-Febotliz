@@ -52,12 +52,9 @@ class TipPatternLevel(NamedTuple):
     expr: signals.SignalExpr
 
 TIP_PATTERNS_LEVELS: list[TipPatternLevel] = [
-    TipPatternLevel(200, signal_builder.parse("100% * 0.5sec-per-token")),
-    TipPatternLevel(40, signal_builder.parse("50% * 2sec-per-token")),
-    TipPatternLevel(13, signal_builder.parse("25% * 3sec-per-token")),
-    TipPatternLevel(4, signal_builder.parse("50% * 10sec-per-token")),
-    TipPatternLevel(2, signal_builder.parse("75% * 5sec-per-token")),
-    TipPatternLevel(1, signal_builder.parse("100% * 1sec-per-token + 2s")),
+    TipPatternLevel(30, signal_builder.parse(":wave * 100% * 1sec-per-token + 60s")),
+    TipPatternLevel(10, signal_builder.parse(":wave * 70% * 4sec-per-token + 20s")),
+    TipPatternLevel(1, signal_builder.parse(":wave * 40% * 8sec-per-token")),
 ]
 
 TIP_PATTERNS_SPECIAL: dict[int, signals.SignalExpr] = {
