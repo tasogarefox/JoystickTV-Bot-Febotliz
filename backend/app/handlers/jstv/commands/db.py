@@ -306,7 +306,7 @@ class BoundViewerCommand:
             if pay and settings.base_cost > viewer.points:
                 await ctx.reply((
                     f"Insufficient {POINTS_NAME} to use command {alias}"
-                ), whisper=True)
+                ))
                 return False
 
             # Check channel cooldown
@@ -362,7 +362,7 @@ class BoundViewerCommand:
                 str_costs = format_command_costs(settings.base_cost, var_costs)
                 await ctx.reply((
                     f"Insufficient {POINTS_NAME} to use command {alias}: {str_costs}"
-                ), whisper=True)
+                ))
 
                 return False
 
