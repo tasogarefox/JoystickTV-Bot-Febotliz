@@ -1,4 +1,4 @@
-from typing import TypeGuard, Generic, TypeVar, ClassVar, Literal
+from typing import TypeGuard, Generic, TypeVar, ClassVar, Literal, Any
 from datetime import datetime
 
 from pydantic import Field, AliasChoices, field_validator
@@ -373,9 +373,13 @@ class JSTVStreamDropin(JSTVBaseMessageWithId):
 
     class Metadata(JSTVLoggedModel):
         origin: str
-        destination: str
         destination_username: str
         number_of_viewers: int
+
+        @property
+        def destination(self) -> str:
+            """Alias for destination_username, for backwards compatibility."""
+            return self.destination_username
 
 class JSTVStreamDroppedIn(JSTVBaseMessageWithId):
     discriminator = "StreamEvent:StreamDroppedIn"
@@ -439,7 +443,9 @@ class JSTVBaseChatMessage(JSTVBaseMessageWithMessageId):
     streamer: JSTVStreamer
     mention: bool
     mentionedUsername: str | None = None
+    mentionedUsernames: tuple[str, ...]
     highlight: bool
+    effect: Any | None = None  # TODO: Identify possible types
 
     def __str__(self) -> str:
         return (
