@@ -129,6 +129,8 @@ class VRChatConnector(BaseConnector):
     _client: SimpleUDPClient
     _server: VRChatReceiver | None = None
 
+    _osc_timed_tasks: dict[str, asyncio.Task]
+
     def __init__(self, manager: ConnectorManager):
         super().__init__(manager)
 
@@ -136,6 +138,8 @@ class VRChatConnector(BaseConnector):
 
         if ENABLE_SERVER:
             self._server = self._create_server()
+
+        self._osc_timed_tasks = {}
 
     def _create_client(self) -> SimpleUDPClient:
         return SimpleUDPClient(*parse_hostport(CLIENT_HOST))
@@ -179,12 +183,43 @@ class VRChatConnector(BaseConnector):
     async def main_loop(self):
         await self._shutdown.wait()
 
-    async def on_param(self, address: str, *args: OSCArg):
+    async def on_param(self, address: str, *args: OSCArg) -> None:
         if not address.startswith("/avatar/parameters/"):
             return
 
         self.logger.debug("OSC message received: %r, %r", address, args)
 
-    async def sendosc(self, address: str, *args: OSCArg):
+    async def sendosc(self, address: str, *args: OSCArg) -> None:
         self.logger.info("Sending OSC message: %r, %r", address, args)
         self._client.send_message(address, *args)
+
+    async def sendosc_timed(
+        self,
+        address: str,
+        value_now: OSCArg,
+        value_then: OSCArg,
+        duration: float,
+    ) -> None:
+        task = self._osc_timed_tasks.get(address)
+        if task:
+            task.cancel()
+
+        self._osc_timed_tasks[address] = asyncio.create_task(
+            self._sendosc_timed_task(address, value_now, value_then, duration),
+        )
+
+    async def _sendosc_timed_task(
+        self,
+        address: str,
+        value_now: OSCArg,
+        value_then: OSCArg,
+        duration: float,
+    ) -> None:
+        try:
+            await self.sendosc(address, value_now)
+            await asyncio.sleep(duration)
+            await self.sendosc(address, value_then)
+        except asyncio.CancelledError:
+            pass
+
+        self._osc_timed_tasks.pop(address, None)
