@@ -12,7 +12,7 @@ class ViewerSignCommand(JSTVCommand):
     description = "Create a clip by requesting OBS to save its replay buffer"
 
     settings = JSTVCommandSettings(
-        aliases = ("saveclip", "clipit",),
+        aliases = ("saveclip", "clipit", "clipdat",),
         min_access_level=AccessLevel.viewer,
         channel_cooldown=30,
     )
