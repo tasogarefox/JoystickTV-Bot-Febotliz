@@ -347,7 +347,7 @@ class SignalContext:
         If `default` is provided, return it if not found. Raise `SignalVariableError` otherwise.
         If `inherit` is True, also check the parent contexts.
         """
-        value = self.variables.get(name, default)
+        value = self.variables.get(name, MISSING)
         if value is not MISSING:
             return value
 
