@@ -1560,11 +1560,6 @@ class ExprBuilder:
 
                 raise SignalBuildError(f"Expected duration after {opstr!r}")
 
-            if token.startswith(":"):
-                name = token[1:]
-                expr_stack.append(NamedExpr(name))
-                continue
-
             if token_fold in self.MIRROR_MODES:
                 flush()
 
@@ -1574,49 +1569,59 @@ class ExprBuilder:
                 items.append(MirrorTransExpr(expr, mode=mode))
                 continue
 
-            v = self._parse_duration_token(token)
-            if v is not None:
-                if expr_duration is not None:
+            if token[0] in "0123456789.":
+                v = self._parse_duration_token(token)
+                if v is not None:
+                    if expr_duration is not None:
+                        flush()
+
+                    expr_duration = DurationExpr(v.min, v.max)
+                    continue
+
+                suffix = self._match_suffix(token, self.INTENSITY_SUFFIXES)
+                if suffix:
                     flush()
 
-                expr_duration = DurationExpr(v.min, v.max)
+                    raw = token[:-len(suffix)]
+                    intensities = _parse_value_ramp(raw, int, name="intensity-percent")
+
+                    if not intensities:
+                        raise SignalBuildError(f"Invalid intensity-percent: {token}")
+
+                    expr_stack.append(IntensityExpr(*intensities))
+                    continue
+
+                suffix = self._match_suffix(token, {"x"})
+                if suffix:
+                    flush()
+
+                    expr = self._pop_expr(items, None, "Nothing to repeat")
+
+                    raw = token[:-len(suffix)]
+                    vmin, vmax = _parse_value_range(raw, int, name="repeat")
+
+                    expr_stack.append(RepeatTransExpr(expr, vmin, vmax))
+                    continue
+
+                suffix = self._match_suffix(token, {"S"})
+                if suffix:
+                    flush()
+
+                    expr = self._pop_expr(items, None, "Nothing to duration-repeat")
+
+                    raw = token[:-len(suffix)]
+                    vmin, vmax = _parse_value_range(raw, int, name="duration-repeat")
+
+                    expr_stack.append(TimedRepeatTransExpr(expr, vmin, vmax))
+                    continue
+
+            elif token.startswith(":"):
+                name = token[1:]
+                expr_stack.append(NamedExpr(name))
                 continue
 
-            suffix = self._match_suffix(token, self.INTENSITY_SUFFIXES)
-            if suffix:
-                flush()
-
-                raw = token[:-len(suffix)]
-                intensities = _parse_value_ramp(raw, int, name="intensity-percent")
-
-                if not intensities:
-                    raise SignalBuildError(f"Invalid intensity-percent: {token}")
-
-                expr_stack.append(IntensityExpr(*intensities))
-                continue
-
-            suffix = self._match_suffix(token, {"x"})
-            if suffix:
-                flush()
-
-                expr = self._pop_expr(items, None, "Nothing to repeat")
-
-                raw = token[:-len(suffix)]
-                vmin, vmax = _parse_value_range(raw, int, name="repeat")
-
-                expr_stack.append(RepeatTransExpr(expr, vmin, vmax))
-                continue
-
-            suffix = self._match_suffix(token, {"S"})
-            if suffix:
-                flush()
-
-                expr = self._pop_expr(items, None, "Nothing to duration-repeat")
-
-                raw = token[:-len(suffix)]
-                vmin, vmax = _parse_value_range(raw, int, name="duration-repeat")
-
-                expr_stack.append(TimedRepeatTransExpr(expr, vmin, vmax))
+            elif token[0].isalpha():
+                expr_stack.append(NamedExpr(token))
                 continue
 
             raise SignalBuildError(f"Invalid value or symbol: {token}")
