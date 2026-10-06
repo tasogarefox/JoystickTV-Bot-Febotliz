@@ -1269,10 +1269,10 @@ def iter_limit_frame_duration(
         )
 
         # Prevent infinite loops
-        if total >= 3_600_000:  # 1 hour
+        if total >= 28_800_000:  # 8 hours
             maximum_str = f"{limit:,}ms" if limit is not None else str(None)
             raise SignalEvalError(
-                f"Cumulative frame duration exceeds 1 hour"
+                f"Cumulative frame duration exceeds 8 hours"
                 f", maybe an infinite loop or bug?"
                 f"; frame: {frame}, stop: {stop}"
                 f", total: {total:,}ms, maximum: {maximum_str}"
@@ -1386,11 +1386,13 @@ def iter_repeat_frames_until_adjusted_duration(
 
 class ExprBuilder:
     DURATION_SUFFIXES: ClassVar[dict[str, int]] = {
-        "sec": 1000,
+        "hour": 3_600_000,
+        "sec": 1_000,
         "min": 60_000,
         "ms": 1,
-        "s": 1000,
+        "s": 1_000,
         "m": 60_000,
+        "h": 3_600_000,
     }
 
     INTENSITY_SUFFIXES: ClassVar[set[str]] = {
